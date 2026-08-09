@@ -21,3 +21,6 @@ local.properties
 output.requests
 review.requests
 test/
+
+# lat.md junction (指向 docs/，避免重复追踪)
+lat.md/

@@ -43,7 +43,15 @@ import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.List
 
 class MainActivity : ComponentActivity() {
-// ... 保持 onCreate 不变
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
+        setContent {
+            SmsSenderTheme {
+                MainScreen()
+            }
+        }
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -53,7 +61,21 @@ fun MainScreen() {
     val config = remember { ConfigManager(context) }
     var selectedTab by remember { mutableIntStateOf(0) }
 
-    // ... 权限请求逻辑保持不变
+    // 权限请求
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { /* 用户已响应 */ }
+
+    LaunchedEffect(Unit) {
+        // Android 13+ (API 33) 需要动态请求通知权限
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS)
+                != PackageManager.PERMISSION_GRANTED
+            ) {
+                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
+    }
 
     Scaffold(
         topBar = {

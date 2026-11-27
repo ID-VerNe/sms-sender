@@ -362,11 +362,7 @@ fun SettingsPanel(config: ConfigManager) {
 fun toggleService(context: android.content.Context, enable: Boolean) {
     val intent = Intent(context, ForwardingService::class.java)
     if (enable) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            context.startForegroundService(intent)
-        } else {
-            context.startService(intent)
-        }
+        context.startForegroundService(intent)
     } else {
         context.stopService(intent)
     }

@@ -53,6 +53,34 @@ class SmsNotificationListenerTest {
     }
 
     @Test
+    fun selectsUntruncatedLongBigText() {
+        val longBody = buildString {
+            repeat(200) { index ->
+                append("第${index + 1}段：这是一条需要完整转发的长短信内容。")
+            }
+        }
+
+        val result = selectNotificationText(
+            bigText = longBody,
+            textLines = arrayOf("通知栏截断摘要"),
+            text = "更短的摘要"
+        )
+
+        assertEquals(longBody, result)
+    }
+
+    @Test
+    fun fallsBackToTextLinesWhenBigTextIsBlank() {
+        val result = selectNotificationText(
+            bigText = "  \n",
+            textLines = arrayOf("第一行", "第二行"),
+            text = "普通短信"
+        )
+
+        assertEquals("第一行\n第二行", result)
+    }
+
+    @Test
     fun returnsNullWhenAllFieldsAreEmpty() {
         val result = selectNotificationText(
             bigText = "",

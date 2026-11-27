@@ -3,7 +3,6 @@ package com.yuuverne.smssender
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.os.Build
 
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
@@ -11,11 +10,7 @@ class BootReceiver : BroadcastReceiver() {
             val config = ConfigManager(context)
             if (config.isServiceEnabled) {
                 val serviceIntent = Intent(context, ForwardingService::class.java)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    context.startForegroundService(serviceIntent)
-                } else {
-                    context.startService(serviceIntent)
-                }
+                context.startForegroundService(serviceIntent)
             }
         }
     }

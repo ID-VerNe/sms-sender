@@ -47,4 +47,4 @@ Key architectural decisions that shaped the project.
 1. **通知监听优先于广播接收**：Android 14+ 限制后台广播接收，`SmsNotificationListener` 通过 NotificationListenerService 捕获通知栏短信，绕过系统对验证码短信的读取限制。
 2. **启发式提取取代 LLM**：原方案依赖 LLM API 提取验证码，存在网络延迟、成本、隐私问题。现用 40+ 条编译时正则，0-2ms 完成提取，29/29 测试用例通过。
 3. **取件码独立于验证码**：[[PickupCodeExtractor]] 与 [[ExtractionUtils]] 完全独立，避免混淆。取件码格式（带连字符、字母数字组合）与 OTP 格式（纯数字）有明显区别。
-4. **SmsReceiver 已废弃**：`onReceive()` 方法体为空，所有短信捕获由 `SmsNotificationListener` 完成。
+4. **SmsReceiver 已移除**：空广播接收器不再注册，所有短信捕获由 `SmsNotificationListener` 完成。

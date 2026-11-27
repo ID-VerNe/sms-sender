@@ -1,7 +1,5 @@
 package com.yuuverne.smssender
 
-import java.security.MessageDigest
-
 data class NotificationSnapshot(
     val packageName: String,
     val key: String?,
@@ -40,7 +38,7 @@ object SmsNotificationPolicy {
             // Include the package explicitly to avoid cross-app key collisions.
             "key:${snapshot.packageName}\u0000$stableKey"
         } else {
-            val contentHash = sha256Hex(snapshot.packageName, snapshot.title, snapshot.text)
+            val contentHash = Sha256.hash(snapshot.packageName, snapshot.title, snapshot.text)
             "content:$contentHash"
         }
     }
@@ -53,48 +51,8 @@ object SmsNotificationPolicy {
         notificationId(notificationKey(snapshot), recipient)
 
     fun notificationId(dedupKey: String, recipient: String): Long =
-        sha256Bytes(dedupKey, recipient).toLong()
+        Sha256.hashToLong(dedupKey, recipient)
 
     fun uniqueWorkName(snapshot: NotificationSnapshot, recipient: String): String =
-        "sms-notification:${recipientFingerprint(snapshot, recipient).toHex()}"
-
-    private fun recipientFingerprint(snapshot: NotificationSnapshot, recipient: String): ByteArray =
-        sha256Bytes(notificationKey(snapshot), recipient)
-
-    private fun sha256Hex(vararg parts: String): String = sha256Bytes(*parts).toHex()
-
-    private fun sha256Bytes(vararg parts: String): ByteArray {
-        val digest = MessageDigest.getInstance("SHA-256")
-        parts.forEach { part ->
-            val bytes = part.toByteArray(Charsets.UTF_8)
-            digest.update(bytes.size.toBytes())
-            digest.update(bytes)
-        }
-        return digest.digest()
-    }
-
-    private fun Int.toBytes(): ByteArray = byteArrayOf(
-        (this ushr 24).toByte(),
-        (this ushr 16).toByte(),
-        (this ushr 8).toByte(),
-        this.toByte()
-    )
-
-    private fun ByteArray.toLong(): Long {
-        var value = 0L
-        for (index in 0 until Long.SIZE_BYTES) {
-            value = (value shl 8) or (this[index].toLong() and 0xFF)
-        }
-        return value
-    }
-
-    private fun ByteArray.toHex(): String = buildString(size * 2) {
-        for (byte in this@toHex) {
-            val value = byte.toInt() and 0xFF
-            append(HEX_DIGITS[value ushr 4])
-            append(HEX_DIGITS[value and 0x0F])
-        }
-    }
-
-    private val HEX_DIGITS = "0123456789abcdef".toCharArray()
+        "sms-notification:${Sha256.hash(notificationKey(snapshot), recipient)}"
 }

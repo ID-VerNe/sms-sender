@@ -9,6 +9,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
@@ -60,6 +61,11 @@ class NotificationForwarderTest {
         assertEquals(1, dao.records.size)
         val record = dao.records.values.single()
         assertEquals(SmsNotificationPolicy.notificationId(DEDUP_KEY, EMAIL_A), record.smsId)
+        assertNotEquals(ADDRESS, record.address)
+        assertNotEquals(BODY, record.body)
+        assertEquals(ADDRESS_SHA256, record.address)
+        assertEquals(BODY_SHA256, record.body)
+        assertEquals(1_000L, record.timestamp)
         assertEquals(10_000L, record.forwardTime)
     }
 
@@ -184,7 +190,7 @@ class NotificationForwarderTest {
         )
 
         assertEquals(1, sendCount)
-        assertEquals("验证码 1234", dao.records.values.single().body)
+        assertEquals(BODY_SHA256, dao.records.values.single().body)
     }
 
     @Test
@@ -219,22 +225,22 @@ class NotificationForwarderTest {
         recipient: String = EMAIL_A,
         subject: String = "subject",
         content: String = "content",
-        body: String = "验证码 1234"
+        body: String = BODY
     ): DeliveryResult = deliver(
         dedupKey = DEDUP_KEY,
         dedupWindowMs = dedupWindowMs,
         recipient = recipient,
         subject = subject,
         content = content,
-        address = "10086",
+        address = ADDRESS,
         body = body,
         timestamp = 1_000L
     )
 
     private fun record(recipient: String, forwardTime: Long) = SmsRecord(
         smsId = SmsNotificationPolicy.notificationId(DEDUP_KEY, recipient),
-        address = "10086",
-        body = "验证码 1234",
+        address = ADDRESS_SHA256,
+        body = BODY_SHA256,
         timestamp = 1_000L,
         forwardTime = forwardTime
     )
@@ -266,6 +272,10 @@ class NotificationForwarderTest {
     private companion object {
         const val EMAIL_A = "a@example.com"
         const val EMAIL_B = "b@example.com"
+        const val ADDRESS = "10086"
+        const val BODY = "验证码 1234"
+        const val ADDRESS_SHA256 = "9646f275f10ae73f70fa297fef85e62b5accd3a38284eb0a64b8203e12dd1373"
+        const val BODY_SHA256 = "3c3e0572ee786d27a4fbed586d5394ba8a615505ee02cb51469e3eff4f87886c"
         const val DEDUP_KEY = "key:com.android.messaging\u0000com.android.messaging|42|null|0"
         const val WINDOW_MS = SmsNotificationPolicy.CONTENT_DEDUP_WINDOW_MS
     }

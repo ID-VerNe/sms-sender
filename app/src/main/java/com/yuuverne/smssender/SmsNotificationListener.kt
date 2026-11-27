@@ -26,7 +26,7 @@ class SmsNotificationListener : NotificationListenerService() {
 
         if (text.isEmpty()) return
 
-        Log.i("SmsSender_Trace", "【通知捕获】来自: $title, 内容: $text")
+        Log.i("SmsSender_Trace", SensitiveLog.notificationLog(packageName, title, text))
 
         // 转发邮件逻辑
         scope.launch {

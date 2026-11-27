@@ -226,14 +226,14 @@ object ExtractionUtils {
         // 1. 启发式提取验证码（0-2ms，本地，无网络，无成本）
         val heuristicCode = extractCode(body)
         if (heuristicCode != null) {
-            Log.d("ExtractionUtils", "启发式提取成功: $heuristicCode")
+            Log.d("ExtractionUtils", "启发式提取成功")
             return "【提取：$heuristicCode】来自：$sender"
         }
 
         // 2. 尝试提取快递取件码（独立于验证码，避免混淆）
         val pickupResult = PickupCodeExtractor.extractPickupCode(body)
         if (pickupResult.code != null) {
-            Log.d("ExtractionUtils", "取件码提取成功: ${pickupResult.code} (${pickupResult.company})")
+            Log.d("ExtractionUtils", "取件码提取成功")
             if (pickupResult.company != "其他快递") {
                 return "【取件码：${pickupResult.code}】${pickupResult.company} - 来自：$sender"
             }

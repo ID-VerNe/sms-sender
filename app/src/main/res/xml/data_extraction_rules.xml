@@ -5,15 +5,11 @@
 -->
 <data-extraction-rules>
     <cloud-backup>
-        <!-- TODO: Use <include> and <exclude> to control what is backed up.
-        <include .../>
-        <exclude .../>
-        -->
+        <!-- 加密的秘密 SharedPreferences 不参与云备份。 -->
+        <exclude domain="sharedpref" path="sms_sender_secure_prefs.xml" />
     </cloud-backup>
-    <!--
     <device-transfer>
-        <include .../>
-        <exclude .../>
+        <!-- 加密的秘密 SharedPreferences 不参与设备迁移。 -->
+        <exclude domain="sharedpref" path="sms_sender_secure_prefs.xml" />
     </device-transfer>
-    -->
 </data-extraction-rules>

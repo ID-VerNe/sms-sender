@@ -6,8 +6,6 @@
    See https://developer.android.com/about/versions/12/backup-restore
 -->
 <full-backup-content>
-    <!--
-   <include domain="sharedpref" path="."/>
-   <exclude domain="sharedpref" path="device.xml"/>
--->
+    <!-- 加密的秘密 SharedPreferences 不参与自动备份。 -->
+    <exclude domain="sharedpref" path="sms_sender_secure_prefs.xml" />
 </full-backup-content>

@@ -83,6 +83,9 @@ dependencies {
     implementation(libs.androidx.room.runtime)
     implementation(libs.androidx.room.ktx)
     kapt(libs.androidx.room.compiler)
+
+    // WorkManager persistent mail queue
+    implementation(libs.androidx.work.runtime.ktx)
     
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)

@@ -6,6 +6,7 @@ import javax.crypto.SecretKey
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertThrows
 import org.junit.Before
 import org.junit.Test
 
@@ -36,11 +37,24 @@ class ConfigManagerTest {
         val storedApiKey = securePrefs.getString(ConfigManager.LLM_API_KEY_KEY, null)
         assertNotEquals(SMTP_SECRET, storedSmtpPassword)
         assertNotEquals(API_SECRET, storedApiKey)
-        assertEquals(SMTP_SECRET, codec.decrypt(storedSmtpPassword!!))
-        assertEquals(API_SECRET, codec.decrypt(storedApiKey!!))
+        assertEquals(SMTP_SECRET, codec.decrypt(storedSmtpPassword!!, ConfigManager.SMTP_PASSWORD_KEY))
+        assertEquals(API_SECRET, codec.decrypt(storedApiKey!!, ConfigManager.LLM_API_KEY_KEY))
 
         assertEquals(SMTP_SECRET, config.smtpPassword)
         assertEquals(API_SECRET, config.llmApiKey)
+    }
+
+    @Test
+    fun `preference key is used as associated data`() {
+        val config = ConfigManager(legacyPrefs, securePrefs, codec)
+
+        config.smtpPassword = SMTP_SECRET
+        config.llmApiKey = API_SECRET
+
+        assertEquals(
+            listOf(ConfigManager.SMTP_PASSWORD_KEY, ConfigManager.LLM_API_KEY_KEY),
+            codec.encryptAssociatedData
+        )
     }
 
     @Test
@@ -61,13 +75,13 @@ class ConfigManagerTest {
         val storedApiKey = securePrefs.getString(ConfigManager.LLM_API_KEY_KEY, null)!!
         assertNotEquals(SMTP_SECRET, storedSmtpPassword)
         assertNotEquals(API_SECRET, storedApiKey)
-        assertEquals(SMTP_SECRET, codec.decrypt(storedSmtpPassword))
-        assertEquals(API_SECRET, codec.decrypt(storedApiKey))
+        assertEquals(SMTP_SECRET, codec.decrypt(storedSmtpPassword, ConfigManager.SMTP_PASSWORD_KEY))
+        assertEquals(API_SECRET, codec.decrypt(storedApiKey, ConfigManager.LLM_API_KEY_KEY))
     }
 
     @Test
     fun `existing encrypted secret wins and stale plaintext is removed`() {
-        val encrypted = codec.encrypt(SMTP_SECRET)
+        val encrypted = codec.encrypt(SMTP_SECRET, ConfigManager.SMTP_PASSWORD_KEY)
         securePrefs.edit().putString(ConfigManager.SMTP_PASSWORD_KEY, encrypted).commit()
         legacyPrefs.edit().putString(ConfigManager.LEGACY_SMTP_PASSWORD_KEY, "stale-plaintext").commit()
 
@@ -133,16 +147,141 @@ class ConfigManagerTest {
         assertFalse(securePrefs.contains(ConfigManager.LLM_API_KEY_KEY))
     }
 
+    @Test
+    fun `failed encryption preserves previous encrypted secret and legacy plaintext`() {
+        val config = ConfigManager(legacyPrefs, securePrefs, codec)
+        config.smtpPassword = "previous-secret"
+        val previousCiphertext = securePrefs.getString(ConfigManager.SMTP_PASSWORD_KEY, null)
+        legacyPrefs.edit().putString(ConfigManager.LEGACY_SMTP_PASSWORD_KEY, "legacy-secret").commit()
+        codec.encryptFailure = IllegalStateException("encryption failed")
+
+        assertThrows(SecretStorageException::class.java) {
+            config.smtpPassword = "new-secret"
+        }
+
+        assertEquals(previousCiphertext, securePrefs.getString(ConfigManager.SMTP_PASSWORD_KEY, null))
+        assertEquals("legacy-secret", legacyPrefs.getString(ConfigManager.LEGACY_SMTP_PASSWORD_KEY, null))
+        assertEquals("previous-secret", config.smtpPassword)
+    }
+
+    @Test
+    fun `failed encrypted commit preserves previous secret and legacy plaintext`() {
+        val config = ConfigManager(legacyPrefs, securePrefs, codec)
+        config.smtpPassword = "previous-secret"
+        val previousCiphertext = securePrefs.getString(ConfigManager.SMTP_PASSWORD_KEY, null)
+        legacyPrefs.edit().putString(ConfigManager.LEGACY_SMTP_PASSWORD_KEY, "legacy-secret").commit()
+        securePrefs.failNextCommit = true
+
+        assertThrows(SecretStorageException::class.java) {
+            config.smtpPassword = "new-secret"
+        }
+
+        assertEquals(previousCiphertext, securePrefs.getString(ConfigManager.SMTP_PASSWORD_KEY, null))
+        assertEquals("legacy-secret", legacyPrefs.getString(ConfigManager.LEGACY_SMTP_PASSWORD_KEY, null))
+        assertEquals("previous-secret", config.smtpPassword)
+    }
+
+    @Test
+    fun `failed legacy cleanup after secure write is surfaced and previous value restored`() {
+        val config = ConfigManager(legacyPrefs, securePrefs, codec)
+        config.smtpPassword = "previous-secret"
+        val previousCiphertext = securePrefs.getString(ConfigManager.SMTP_PASSWORD_KEY, null)
+        legacyPrefs.failNextCommit = true
+
+        assertThrows(SecretStorageException::class.java) {
+            config.smtpPassword = "new-secret"
+        }
+
+        assertEquals(previousCiphertext, securePrefs.getString(ConfigManager.SMTP_PASSWORD_KEY, null))
+        assertEquals("previous-secret", config.smtpPassword)
+    }
+
+    @Test
+    fun `failed migration commit keeps legacy plaintext`() {
+        legacyPrefs.edit().putString(ConfigManager.LEGACY_SMTP_PASSWORD_KEY, SMTP_SECRET).commit()
+        securePrefs.failNextCommit = true
+
+        val config = ConfigManager(legacyPrefs, securePrefs, codec)
+
+        assertEquals(SMTP_SECRET, legacyPrefs.getString(ConfigManager.LEGACY_SMTP_PASSWORD_KEY, null))
+        assertFalse(securePrefs.contains(ConfigManager.SMTP_PASSWORD_KEY))
+        assertEquals(SMTP_SECRET, config.smtpPassword)
+    }
+
+    @Test
+    fun `failed migration encryption keeps legacy plaintext`() {
+        legacyPrefs.edit().putString(ConfigManager.LEGACY_SMTP_PASSWORD_KEY, SMTP_SECRET).commit()
+        codec.encryptFailure = IllegalStateException("encryption failed")
+
+        val config = ConfigManager(legacyPrefs, securePrefs, codec)
+
+        assertEquals(SMTP_SECRET, legacyPrefs.getString(ConfigManager.LEGACY_SMTP_PASSWORD_KEY, null))
+        assertFalse(securePrefs.contains(ConfigManager.SMTP_PASSWORD_KEY))
+        assertEquals(SMTP_SECRET, config.smtpPassword)
+    }
+
+    @Test
+    fun `corrupted ciphertext falls back to legacy plaintext`() {
+        securePrefs.edit().putString(ConfigManager.SMTP_PASSWORD_KEY, "not-valid-base64").commit()
+        legacyPrefs.edit().putString(ConfigManager.LEGACY_SMTP_PASSWORD_KEY, SMTP_SECRET).commit()
+
+        val config = ConfigManager(legacyPrefs, securePrefs, codec)
+
+        assertEquals(SMTP_SECRET, legacyPrefs.getString(ConfigManager.LEGACY_SMTP_PASSWORD_KEY, null))
+        assertEquals(SMTP_SECRET, config.smtpPassword)
+    }
+
+    @Test
+    fun `corrupted ciphertext without legacy value returns empty`() {
+        securePrefs.edit().putString(ConfigManager.SMTP_PASSWORD_KEY, "not-valid-base64").commit()
+
+        val config = ConfigManager(legacyPrefs, securePrefs, codec)
+
+        assertEquals("", config.smtpPassword)
+    }
+
+    @Test
+    fun `wrong key falls back to legacy plaintext`() {
+        val encrypted = codec.encrypt(SMTP_SECRET, ConfigManager.SMTP_PASSWORD_KEY)
+        securePrefs.edit().putString(ConfigManager.SMTP_PASSWORD_KEY, encrypted).commit()
+        legacyPrefs.edit().putString(ConfigManager.LEGACY_SMTP_PASSWORD_KEY, "legacy-secret").commit()
+        val differentCodec = TestAesGcmCodec()
+
+        val config = ConfigManager(legacyPrefs, securePrefs, differentCodec)
+
+        assertEquals("legacy-secret", legacyPrefs.getString(ConfigManager.LEGACY_SMTP_PASSWORD_KEY, null))
+        assertEquals("legacy-secret", config.smtpPassword)
+    }
+
+    @Test
+    fun `wrong key without legacy value returns empty`() {
+        val encrypted = codec.encrypt(SMTP_SECRET, ConfigManager.SMTP_PASSWORD_KEY)
+        securePrefs.edit().putString(ConfigManager.SMTP_PASSWORD_KEY, encrypted).commit()
+        val differentCodec = TestAesGcmCodec()
+
+        val config = ConfigManager(legacyPrefs, securePrefs, differentCodec)
+
+        assertEquals("", config.smtpPassword)
+    }
+
     private class TestAesGcmCodec : SecretCodec {
         private val key: SecretKey = KeyGenerator.getInstance("AES").apply { init(256) }.generateKey()
+        val encryptAssociatedData = mutableListOf<String>()
+        var encryptFailure: Exception? = null
 
-        override fun encrypt(plainText: String): String = AesGcmCipher.encrypt(key, plainText)
+        override fun encrypt(plainText: String, associatedData: String): String {
+            encryptFailure?.let { throw it }
+            encryptAssociatedData += associatedData
+            return AesGcmCipher.encrypt(key, plainText, associatedData)
+        }
 
-        override fun decrypt(cipherText: String): String = AesGcmCipher.decrypt(key, cipherText)
+        override fun decrypt(cipherText: String, associatedData: String): String =
+            AesGcmCipher.decrypt(key, cipherText, associatedData)
     }
 
     private class FakeSharedPreferences : SharedPreferences {
         private val values = mutableMapOf<String, Any>()
+        var failNextCommit = false
 
         override fun getAll(): MutableMap<String, *> = values.toMutableMap()
 
@@ -203,6 +342,10 @@ class ConfigManagerTest {
             override fun clear(): SharedPreferences.Editor = apply { clearRequested = true }
 
             override fun commit(): Boolean {
+                if (failNextCommit) {
+                    failNextCommit = false
+                    return false
+                }
                 if (clearRequested) values.clear()
                 pending.forEach { (key, value) ->
                     if (value == null) values.remove(key) else values[key] = value

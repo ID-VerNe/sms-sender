@@ -62,6 +62,10 @@ android {
             merges += "META-INF/javamail.providers"
         }
     }
+
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
 }
 
 dependencies {

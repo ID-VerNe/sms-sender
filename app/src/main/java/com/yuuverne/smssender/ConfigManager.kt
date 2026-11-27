@@ -4,6 +4,9 @@ import android.content.Context
 import android.content.SharedPreferences
 import android.util.Log
 
+/** 敏感配置加密、提交或清理失败时抛出，调用方应保留界面输入并提示用户。 */
+class SecretStorageException(message: String, cause: Throwable? = null) : Exception(message, cause)
+
 class ConfigManager internal constructor(
     private val prefs: SharedPreferences,
     private val securePrefs: SharedPreferences,
@@ -12,7 +15,7 @@ class ConfigManager internal constructor(
     constructor(context: Context) : this(
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE),
         context.getSharedPreferences(SECURE_PREFS_NAME, Context.MODE_PRIVATE),
-        AndroidKeystoreSecretCodec()
+        AndroidKeystoreSecretCodec
     )
 
     init {
@@ -73,9 +76,9 @@ class ConfigManager internal constructor(
         val encrypted = securePrefs.getString(secureKey, null)
         if (encrypted != null) {
             return try {
-                secretCodec.decrypt(encrypted)
+                secretCodec.decrypt(encrypted, secureKey)
             } catch (e: Exception) {
-                Log.w(TAG, "无法解密敏感配置，尝试读取旧版配置: $legacyKey")
+                Log.w(TAG, "无法解密敏感配置，尝试读取旧版配置: $legacyKey", e)
                 prefs.getString(legacyKey, "") ?: ""
             }
         }
@@ -84,48 +87,94 @@ class ConfigManager internal constructor(
 
     private fun writeSecret(secureKey: String, legacyKey: String, value: String) {
         if (value.isEmpty()) {
-            securePrefs.edit().remove(secureKey).apply()
-            prefs.edit().remove(legacyKey).apply()
+            removeSecret(secureKey, legacyKey)
             return
         }
 
+        val previousEncrypted = securePrefs.getString(secureKey, null)
         try {
-            val encrypted = secretCodec.encrypt(value)
-            securePrefs.edit().putString(secureKey, encrypted).apply()
-            prefs.edit().remove(legacyKey).apply()
+            val encrypted = secretCodec.encrypt(value, secureKey)
+            if (!securePrefs.edit().putString(secureKey, encrypted).commit()) {
+                restoreSecureSecret(secureKey, previousEncrypted)
+                throw SecretStorageException("无法提交加密敏感配置: $secureKey")
+            }
+            if (!prefs.edit().remove(legacyKey).commit()) {
+                restoreSecureSecret(secureKey, previousEncrypted)
+                throw SecretStorageException("敏感配置已加密保存，但无法删除旧版明文: $legacyKey")
+            }
+        } catch (e: SecretStorageException) {
+            Log.e(TAG, e.message ?: "无法加密保存敏感配置: $secureKey", e)
+            throw e
         } catch (e: Exception) {
-            Log.e(TAG, "无法加密保存敏感配置: $legacyKey")
+            Log.e(TAG, "无法加密保存敏感配置: $secureKey", e)
+            throw SecretStorageException("无法加密保存敏感配置: $secureKey", e)
+        }
+    }
+
+    private fun removeSecret(secureKey: String, legacyKey: String) {
+        val previousEncrypted = securePrefs.getString(secureKey, null)
+        try {
+            if (!securePrefs.edit().remove(secureKey).commit()) {
+                throw SecretStorageException("无法删除加密敏感配置: $secureKey")
+            }
+            if (!prefs.edit().remove(legacyKey).commit()) {
+                restoreSecureSecret(secureKey, previousEncrypted)
+                throw SecretStorageException("加密敏感配置已删除，但无法删除旧版明文: $legacyKey")
+            }
+        } catch (e: SecretStorageException) {
+            Log.e(TAG, e.message ?: "无法删除敏感配置: $secureKey", e)
+            throw e
+        } catch (e: Exception) {
+            Log.e(TAG, "无法删除敏感配置: $secureKey", e)
+            throw SecretStorageException("无法删除敏感配置: $secureKey", e)
+        }
+    }
+
+    private fun restoreSecureSecret(secureKey: String, previousValue: String?) {
+        val editor = securePrefs.edit()
+        if (previousValue == null) {
+            editor.remove(secureKey)
+        } else {
+            editor.putString(secureKey, previousValue)
+        }
+        if (!editor.commit()) {
+            Log.w(TAG, "无法恢复先前的加密敏感配置: $secureKey")
         }
     }
 
     private fun migrateLegacySecret(secureKey: String, legacyKey: String) {
-        if (securePrefs.contains(secureKey)) {
-            val encrypted = securePrefs.getString(secureKey, null)
-            if (encrypted != null) {
-                try {
-                    secretCodec.decrypt(encrypted)
-                    prefs.edit().remove(legacyKey).apply()
-                } catch (e: Exception) {
-                    Log.w(TAG, "已加密的敏感配置无法解密，保留旧版配置以便恢复: $legacyKey")
+        val encrypted = securePrefs.getString(secureKey, null)
+        if (encrypted != null) {
+            try {
+                secretCodec.decrypt(encrypted, secureKey)
+                if (!prefs.edit().remove(legacyKey).commit()) {
+                    Log.w(TAG, "已加密的敏感配置无法清理旧版明文: $legacyKey")
                 }
-                return
+            } catch (e: Exception) {
+                Log.w(TAG, "已加密的敏感配置无法解密，保留旧版配置以便恢复: $legacyKey", e)
             }
+            return
         }
 
         val plainText = prefs.getString(legacyKey, null) ?: return
         if (plainText.isEmpty()) {
-            prefs.edit().remove(legacyKey).apply()
+            if (!prefs.edit().remove(legacyKey).commit()) {
+                Log.w(TAG, "无法清理空的旧版敏感配置: $legacyKey")
+            }
             return
         }
 
         try {
-            val encrypted = secretCodec.encrypt(plainText)
-            val committed = securePrefs.edit().putString(secureKey, encrypted).commit()
-            if (committed) {
-                prefs.edit().remove(legacyKey).apply()
+            val cipherText = secretCodec.encrypt(plainText, secureKey)
+            if (!securePrefs.edit().putString(secureKey, cipherText).commit()) {
+                Log.w(TAG, "无法迁移旧版敏感配置，加密数据提交失败: $legacyKey")
+                return
+            }
+            if (!prefs.edit().remove(legacyKey).commit()) {
+                Log.w(TAG, "敏感配置已迁移，但无法删除旧版明文: $legacyKey")
             }
         } catch (e: Exception) {
-            Log.w(TAG, "无法迁移旧版敏感配置: $legacyKey")
+            Log.w(TAG, "无法迁移旧版敏感配置: $legacyKey", e)
         }
     }
 

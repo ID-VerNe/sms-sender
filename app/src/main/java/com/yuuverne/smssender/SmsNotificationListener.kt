@@ -39,9 +39,11 @@ class SmsNotificationListener : NotificationListenerService() {
 
         val extras = sbn.notification.extras
         val title = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString() ?: "未知号码"
-        val text = extras.getCharSequence(Notification.EXTRA_TEXT)?.toString() ?: ""
-
-        if (text.isEmpty()) return
+        val text = selectNotificationText(
+            bigText = extras.getCharSequence(Notification.EXTRA_BIG_TEXT),
+            textLines = extras.getCharSequenceArray(Notification.EXTRA_TEXT_LINES),
+            text = extras.getCharSequence(Notification.EXTRA_TEXT)
+        ) ?: return
 
         Log.i("SmsSender_Trace", "【通知捕获】来自: $title, 内容: $text")
 
@@ -94,6 +96,21 @@ class SmsNotificationListener : NotificationListenerService() {
         scope.cancel()
         super.onDestroy()
     }
+}
+
+internal fun selectNotificationText(
+    bigText: CharSequence?,
+    textLines: Array<out CharSequence>?,
+    text: CharSequence?
+): String? {
+    bigText?.toString()?.takeIf { it.isNotBlank() }?.let { return it }
+
+    textLines
+        ?.joinToString("\n") { it.toString() }
+        ?.takeIf { it.isNotBlank() }
+        ?.let { return it }
+
+    return text?.toString()?.takeIf { it.isNotBlank() }
 }
 
 internal fun createNotificationScope(

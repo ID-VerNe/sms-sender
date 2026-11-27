@@ -18,13 +18,31 @@ object MailSender {
         onSuccess: () -> Unit = {},
         onFailure: (Exception) -> Unit = {}
     ) {
-        val finalTarget = targetOverride ?: config.receiverEmail
-        if (finalTarget.isEmpty()) {
-            onFailure(Exception("未配置接收邮箱"))
+        try {
+            sendEmailOrThrow(config, subject, content, targetOverride)
+        } catch (e: Exception) {
+            android.util.Log.e("MailSender", "邮件发送失败: ${e.message}", e)
+            onFailure(e)
             return
         }
+        onSuccess()
+    }
+
+    /**
+     * Synchronous send used by the persistent WorkManager queue.
+     * The caller owns retry and failure handling.
+     */
+    fun sendEmailOrThrow(
+        config: ConfigManager,
+        subject: String,
+        content: String,
+        targetOverride: String? = null
+    ) {
+        val finalTarget = targetOverride ?: config.receiverEmail
+        if (finalTarget.isEmpty()) {
+            throw IllegalArgumentException("未配置接收邮箱")
+        }
         android.util.Log.d("MailSender", "开始构建邮件会话... Host: ${config.smtpHost}, Target: $finalTarget")
-        
         val props = buildSmtpProperties(
             host = config.smtpHost,
             port = config.smtpPort,
@@ -37,20 +55,14 @@ object MailSender {
             }
         })
 
-        try {
-            val message = MimeMessage(session)
-            message.setFrom(InternetAddress(config.smtpEmail))
-            message.setRecipients(Message.RecipientType.TO, InternetAddress.parse(finalTarget))
-            message.subject = subject
-            message.setText(content)
+        val message = MimeMessage(session)
+        message.setFrom(InternetAddress(config.smtpEmail))
+        message.setRecipients(Message.RecipientType.TO, InternetAddress.parse(finalTarget))
+        message.subject = subject
+        message.setText(content)
 
-            android.util.Log.d("MailSender", "正在发送至 $finalTarget...")
-            Transport.send(message)
-            android.util.Log.i("MailSender", "发送成功至 $finalTarget！")
-            onSuccess()
-        } catch (e: Exception) {
-            android.util.Log.e("MailSender", "邮件发送失败详情: $finalTarget", e)
-            onFailure(e)
-        }
+        android.util.Log.d("MailSender", "正在发送至 $finalTarget...")
+        Transport.send(message)
+        android.util.Log.i("MailSender", "发送成功至 $finalTarget！")
     }
 }

@@ -93,20 +93,16 @@ class SmsNotificationListener : NotificationListenerService() {
             }
 
             val smartSubject = ExtractionUtils.getSmartSubject(config, title, text)
-            
+            val mailContent = "检测到系统通知栏短信：\n来自：$title\n内容：$text\n\n(提示：这是通过监听通知栏获取的内容，可绕过系统验证码读取限制)\n\n——来自SmsSender"
+
             targetEmails.forEach { email ->
-                MailSender.sendEmail(
-                    config = config,
+                MailForwardWorker.enqueue(
+                    context = applicationContext,
+                    recipient = email,
                     subject = smartSubject,
-                    content = "检测到系统通知栏短信：\n来自：$title\n内容：$text\n\n(提示：这是通过监听通知栏获取的内容，可绕过系统验证码读取限制)\n\n——来自SmsSender",
-                    targetOverride = email,
-                    onSuccess = {
-                        Log.i("SmsSender_Trace", "转发至 $email 成功")
-                    },
-                    onFailure = { e ->
-                        Log.e("SmsSender_Trace", "转发至 $email 失败: ${e.message}")
-                    }
+                    content = mailContent
                 )
+                Log.i("SmsSender_Trace", "转发至 $email 已加入发送队列")
             }
         }
     }

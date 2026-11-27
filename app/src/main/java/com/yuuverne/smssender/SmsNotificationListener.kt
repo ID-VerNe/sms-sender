@@ -1,12 +1,28 @@
 package com.yuuverne.smssender
 
 import android.app.Notification
+import android.provider.Telephony
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+
+private val knownSmsPackages = setOf(
+    "com.android.mms", // AOSP / Xiaomi / Redmi and other OEMs
+    "com.android.messaging",
+    "com.google.android.apps.messaging", // Google Messages
+    "com.samsung.android.messaging", // Samsung Messages
+    "com.bbk.message", // Vivo / iQOO
+    "com.coloros.mms", // OPPO / Realme
+    "com.oneplus.mms" // OnePlus
+)
+
+internal fun isSmsPackage(packageName: String, defaultSmsPackage: String?): Boolean {
+    if (packageName.isBlank()) return false
+    return packageName == defaultSmsPackage || packageName in knownSmsPackages
+}
 
 class SmsNotificationListener : NotificationListenerService() {
 
@@ -15,8 +31,9 @@ class SmsNotificationListener : NotificationListenerService() {
     override fun onNotificationPosted(sbn: StatusBarNotification) {
         val packageName = sbn.packageName
         
-        // 过滤短信应用包名
-        if (!packageName.contains("mms") && !packageName.contains("messaging")) {
+        // 结合系统默认短信应用与已知 OEM 包名，避免误转发普通 messaging 应用
+        val defaultSmsPackage = Telephony.Sms.getDefaultSmsPackage(this)
+        if (!isSmsPackage(packageName, defaultSmsPackage)) {
             return
         }
 

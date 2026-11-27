@@ -4,7 +4,7 @@
 
 ## SMS Capture Flow
 
-`onNotificationPosted()` 被触发时：检查包名是否包含 `mms` 或 `messaging` → 从 `Notification.extras` 提取标题（发件人）和正文 → 调用 [[ExtractionUtils]] 的 `getSmartSubject()` 生成主题 → 查询 [[database]] 中的转发规则 → 遍历目标邮箱列表发送邮件。
+`onNotificationPosted()` 被触发时：通过 `isSmsPackage()` 结合系统默认短信应用与已知 OEM 包名进行精确匹配 → 从 `Notification.extras` 提取标题（发件人）和正文 → 调用 [[ExtractionUtils]] 的 `getSmartSubject()` 生成主题 → 查询 [[database]] 中的转发规则 → 遍历目标邮箱列表发送邮件。
 
 ## Rule Matching
 
@@ -12,7 +12,7 @@
 
 ## Package Filter
 
-当前仅过滤包名包含 `mms` 或 `messaging` 的应用。这是简化的系统短信应用识别策略，可能无法覆盖所有定制 ROM（如 Flyme 的短信应用包名不同）。
+通过 `Telephony.Sms.getDefaultSmsPackage()` 获取系统默认短信应用，并与已知 OEM 包名集合进行精确匹配。普通 messaging 应用只有在其包名恰好为系统默认短信应用时才会被接受，避免仅凭包名关键字误转发。
 
 ## Dependencies
 

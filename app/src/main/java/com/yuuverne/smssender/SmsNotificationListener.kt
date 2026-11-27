@@ -5,6 +5,8 @@ import android.provider.Telephony
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import android.util.Log
+import com.yuuverne.smssender.database.AppDatabase
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
@@ -47,8 +49,8 @@ class SmsNotificationListener : NotificationListenerService() {
         }
 
         val packageName = sbn.packageName
-        
-        // 结合系统默认短信应用与已知 OEM 包名，避免误转发普通 messaging 应用
+
+        // 结合系统默认短信应用与已知 OEM 包名，避免误转发普通 messaging 应用。
         val defaultSmsPackage = try {
             Telephony.Sms.getDefaultSmsPackage(this)
         } catch (e: Exception) {
@@ -59,7 +61,9 @@ class SmsNotificationListener : NotificationListenerService() {
             return
         }
 
-        val extras = sbn.notification.extras
+        val notification = sbn.notification
+        val flags = notification.flags
+        val extras = notification.extras
         val title = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString() ?: "未知号码"
         val text = selectNotificationText(
             bigText = extras.getCharSequence(Notification.EXTRA_BIG_TEXT),
@@ -67,42 +71,71 @@ class SmsNotificationListener : NotificationListenerService() {
             text = extras.getCharSequence(Notification.EXTRA_TEXT)
         ) ?: return
 
-        Log.i("SmsSender_Trace", "【通知捕获】来自: $title, 内容: $text")
+        val snapshot = NotificationSnapshot(
+            packageName = packageName,
+            key = sbn.key,
+            title = title,
+            text = text,
+            postedAt = sbn.postTime,
+            isGroupSummary = flags and Notification.FLAG_GROUP_SUMMARY != 0,
+            isOngoing = flags and Notification.FLAG_ONGOING_EVENT != 0,
+            isNoClear = flags and Notification.FLAG_NO_CLEAR != 0,
+            isForegroundService = flags and Notification.FLAG_FOREGROUND_SERVICE != 0
+        )
 
-        // 转发邮件逻辑
+        if (!SmsNotificationPolicy.shouldForward(snapshot)) return
+
+        Log.i("SmsSender_Trace", SensitiveLog.notificationLog(packageName, title, text))
+
         scope.launch {
-            val db = com.yuuverne.smssender.database.AppDatabase.getDatabase(applicationContext)
-            val enabledRules = db.ruleDao().getEnabledRules()
-            
-            // 构建待发送邮箱列表 (去重)
-            val targetEmails = mutableSetOf<String>()
-            if (config.receiverEmail.isNotEmpty()) {
-                targetEmails.add(config.receiverEmail)
-            }
-            
-            // 匹配关键词规则
-            enabledRules.forEach { rule ->
-                if (text.contains(rule.keyword, ignoreCase = true)) {
-                    targetEmails.add(rule.targetEmail)
-                }
-            }
+            forwardIfNew(snapshot)
+        }
+    }
 
-            if (targetEmails.isEmpty()) {
-                Log.w("SmsSender_Trace", "无有效收件人邮箱，取消转发")
-                return@launch
+    private suspend fun forwardIfNew(snapshot: NotificationSnapshot) {
+        val config = ConfigManager(applicationContext)
+        val db = AppDatabase.getDatabase(applicationContext)
+        val enabledRules = db.ruleDao().getEnabledRules()
+
+        val targetEmails = linkedSetOf<String>()
+        config.receiverEmail.trim().takeIf { it.isNotEmpty() }?.let(targetEmails::add)
+        enabledRules.forEach { rule ->
+            if (snapshot.text.contains(rule.keyword, ignoreCase = true)) {
+                rule.targetEmail.trim().takeIf { it.isNotEmpty() }?.let(targetEmails::add)
             }
+        }
 
-            val smartSubject = ExtractionUtils.getSmartSubject(config, title, text)
-            val mailContent = "检测到系统通知栏短信：\n来自：$title\n内容：$text\n\n(提示：这是通过监听通知栏获取的内容，可绕过系统验证码读取限制)\n\n——来自SmsSender"
+        if (targetEmails.isEmpty()) {
+            Log.w("SmsSender_Trace", "无有效收件人邮箱，取消转发")
+            return
+        }
 
-            targetEmails.forEach { email ->
-                MailForwardWorker.enqueue(
+        val smartSubject = ExtractionUtils.getSmartSubject(config, snapshot.title, snapshot.text)
+        val mailContent = "检测到系统通知栏短信：\n来自：${snapshot.title}\n内容：${snapshot.text}\n\n(提示：这是通过监听通知栏获取的内容，可绕过系统验证码读取限制)\n\n——来自SmsSender"
+        val dedupKey = SmsNotificationPolicy.notificationKey(snapshot)
+        val dedupWindowMs = SmsNotificationPolicy.dedupWindowMs(snapshot)
+
+        targetEmails.forEach { email ->
+            val workName = SmsNotificationPolicy.uniqueWorkName(snapshot, email)
+
+            try {
+                enqueueUniqueNotificationWork(
                     context = applicationContext,
+                    workName = workName,
                     recipient = email,
                     subject = smartSubject,
-                    content = mailContent
+                    content = mailContent,
+                    dedupKey = dedupKey,
+                    dedupWindowMs = dedupWindowMs,
+                    address = snapshot.title,
+                    body = snapshot.text,
+                    timestamp = snapshot.postedAt
                 )
                 Log.i("SmsSender_Trace", "转发至 $email 已加入发送队列")
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e("SmsSender_Trace", "转发至 $email 入队失败，后续回调可重试", e)
             }
         }
     }

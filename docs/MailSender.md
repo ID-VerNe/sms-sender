@@ -8,7 +8,7 @@ SMTP 邮件发送模块，负责将短信内容通过配置的邮件服务器转
 
 ## Session Management
 
-`Session.getInstance()` 通过 `Authenticator` 回调提供发件邮箱凭证。`MimeMessage` 对象封装邮件头（发件人、收件人、主题、正文），通过 `Transport.send()` 发送。`sendEmail()` 函数接收 `onSuccess` 和 `onFailure` 回调。
+`Session.getInstance()` 通过 `Authenticator` 回调提供发件邮箱凭证。`MimeMessage` 对象封装邮件头（发件人、收件人、主题、正文），通过 `Transport.send()` 发送。通知转发由 [[MailForwardWorker]] 调用同步的 `sendEmailOrThrow()`，由 Worker 负责重试和成功后记账；`sendEmail()` 回调封装保留给 [[MainActivity#SettingsPanel]] 的测试邮件路径。
 
 ## Dependencies
 
@@ -22,14 +22,14 @@ SMTP 邮件发送模块，负责将短信内容通过配置的邮件服务器转
 
 哪些模块使用本模块。
 
-- [[SmsNotificationListener]] — 通知捕获后调用 `sendEmail()` 发送
+- [[MailForwardWorker]] — WorkManager 中执行通知邮件发送
 - [[MainActivity#SettingsPanel]] — 测试邮件发送
 
 ## Error Conditions
 
 该模块特有的错误条件。
 
-- 未配置接收邮箱 → `onFailure(Exception("未配置接收邮箱"))`
-- SMTP 认证失败 → 服务器返回 535 错误，堆栈包含 `AuthenticationFailedException`
-- 网络超时 → 连接超时 10s，读取超时 15s，超时后 `onFailure` 回调
+- 未配置接收邮箱 → `IllegalArgumentException("未配置接收邮箱")`
+- SMTP 认证失败 → 服务器返回 535 错误，堆栈包含 `AuthenticationFailedException`，Worker 按永久失败处理且不写去重记录
+- 网络超时 → 连接超时 10s，读取超时 15s，Worker 按临时失败重试
 - 端口配置错误 → 465 端口未启用 SSL 时服务器拒绝连接

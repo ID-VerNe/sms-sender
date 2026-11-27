@@ -293,7 +293,16 @@ fun SettingsPanel(config: ConfigManager) {
             modifier = Modifier.fillMaxWidth()
         )
         OutlinedTextField(value = smtpEmail, onValueChange = { smtpEmail = it; config.smtpEmail = it }, label = { Text("发件邮箱") }, modifier = Modifier.fillMaxWidth())
-        OutlinedTextField(value = smtpPassword, onValueChange = { smtpPassword = it; config.smtpPassword = it }, label = { Text("授权码") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
+        OutlinedTextField(value = smtpPassword, onValueChange = {
+            val previous = smtpPassword
+            smtpPassword = it
+            try {
+                config.smtpPassword = it
+            } catch (e: SecretStorageException) {
+                smtpPassword = previous
+                Toast.makeText(context, e.message ?: "授权码保存失败", Toast.LENGTH_SHORT).show()
+            }
+        }, label = { Text("授权码") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
         
         Row(verticalAlignment = Alignment.CenterVertically) {
             Checkbox(checked = useSsl, onCheckedChange = { useSsl = it; config.useSsl = it })
@@ -313,7 +322,16 @@ fun SettingsPanel(config: ConfigManager) {
         }
         if (useLlm) {
             OutlinedTextField(value = llmApiUrl, onValueChange = { llmApiUrl = it; config.llmApiUrl = it }, label = { Text("API URL") }, modifier = Modifier.fillMaxWidth())
-            OutlinedTextField(value = llmApiKey, onValueChange = { llmApiKey = it; config.llmApiKey = it }, label = { Text("API Key") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(value = llmApiKey, onValueChange = {
+                val previous = llmApiKey
+                llmApiKey = it
+                try {
+                    config.llmApiKey = it
+                } catch (e: SecretStorageException) {
+                    llmApiKey = previous
+                    Toast.makeText(context, e.message ?: "API Key 保存失败", Toast.LENGTH_SHORT).show()
+                }
+            }, label = { Text("API Key") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
             OutlinedTextField(value = llmModelId, onValueChange = { llmModelId = it; config.llmModelId = it }, label = { Text("Model ID") }, modifier = Modifier.fillMaxWidth())
         }
         

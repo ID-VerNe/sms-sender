@@ -88,7 +88,6 @@ class ConfigManagerTest {
 
     @Test
     fun `concurrent migration cannot overwrite a newer secret write`() {
-        legacyPrefs.edit().putString(ConfigManager.LEGACY_SMTP_PASSWORD_KEY, SMTP_SECRET).commit()
         val migrationEntered = CountDownLatch(1)
         val releaseMigration = CountDownLatch(1)
         val delegate = TestAesGcmCodec()
@@ -98,24 +97,31 @@ class ConfigManagerTest {
             entered = migrationEntered,
             release = releaseMigration
         )
+        // Construct the writer before adding legacy data so its constructor cannot be the
+        // operation that blocks on SECRET_LOCK.
+        val writerConfig = ConfigManager(legacyPrefs, securePrefs, blockingCodec)
+        legacyPrefs.edit().putString(ConfigManager.LEGACY_SMTP_PASSWORD_KEY, SMTP_SECRET).commit()
         val migratingConfig = AtomicReference<ConfigManager>()
         val migrationFailure = AtomicReference<Throwable>()
         val migrator = thread("credential-migrator", migrationFailure) {
             migratingConfig.set(ConfigManager(legacyPrefs, securePrefs, blockingCodec))
         }
-        val writerStarted = CountDownLatch(1)
+        val writerCallingSetter = CountDownLatch(1)
         val writerFailure = AtomicReference<Throwable>()
         val writer = thread("credential-writer", writerFailure) {
-            writerStarted.countDown()
-            ConfigManager(legacyPrefs, securePrefs, blockingCodec).smtpPassword = NEW_SECRET
+            writerCallingSetter.countDown()
+            writerConfig.smtpPassword = NEW_SECRET
         }
 
         try {
             migrator.start()
             assertTrue("Migration did not reach encryption", migrationEntered.await(5, TimeUnit.SECONDS))
             writer.start()
-            assertTrue("Writer did not start", writerStarted.await(5, TimeUnit.SECONDS))
-            awaitBlocked(writer)
+            assertTrue(
+                "Writer did not reach the setter call",
+                writerCallingSetter.await(5, TimeUnit.SECONDS)
+            )
+            awaitBlockedOnSecretLock(writer, migrator)
             assertTrue("Writer should be waiting for the migration transaction", writer.isAlive)
         } finally {
             releaseMigration.countDown()
@@ -143,22 +149,30 @@ class ConfigManagerTest {
             entered = readEntered,
             release = releaseRead
         )
+        // Finish all migrations before the test threads start.
         val readerConfig = ConfigManager(legacyPrefs, securePrefs, blockingCodec)
+        val writerConfig = ConfigManager(legacyPrefs, securePrefs, blockingCodec)
         readerConfig.smtpPassword = SMTP_SECRET
         val readFailure = AtomicReference<Throwable>()
         val reader = thread("credential-reader", readFailure) {
             readerConfig.smtpPassword
         }
+        val writerCallingSetter = CountDownLatch(1)
         val writerFailure = AtomicReference<Throwable>()
         val writer = thread("credential-writer", writerFailure) {
-            ConfigManager(legacyPrefs, securePrefs, blockingCodec).smtpPassword = NEW_SECRET
+            writerCallingSetter.countDown()
+            writerConfig.smtpPassword = NEW_SECRET
         }
 
         try {
             reader.start()
             assertTrue("Read did not reach decryption", readEntered.await(5, TimeUnit.SECONDS))
             writer.start()
-            awaitBlocked(writer)
+            assertTrue(
+                "Writer did not reach the setter call",
+                writerCallingSetter.await(5, TimeUnit.SECONDS)
+            )
+            awaitBlockedOnSecretLock(writer, reader)
             assertTrue("Writer should be waiting for the read transaction", writer.isAlive)
         } finally {
             releaseRead.countDown()
@@ -176,7 +190,9 @@ class ConfigManagerTest {
     @Test
     fun `secret removal cannot erase a concurrent newer write`() {
         val codec = TestAesGcmCodec()
+        // Finish all migrations before the test threads start.
         val config = ConfigManager(legacyPrefs, securePrefs, codec)
+        val writerConfig = ConfigManager(legacyPrefs, securePrefs, codec)
         config.smtpPassword = SMTP_SECRET
         val removalEntered = CountDownLatch(1)
         val releaseRemoval = CountDownLatch(1)
@@ -192,16 +208,22 @@ class ConfigManagerTest {
         val remover = thread("credential-remover", removalFailure) {
             config.smtpPassword = ""
         }
+        val writerCallingSetter = CountDownLatch(1)
         val writerFailure = AtomicReference<Throwable>()
         val writer = thread("credential-writer", writerFailure) {
-            ConfigManager(legacyPrefs, securePrefs, codec).smtpPassword = NEW_SECRET
+            writerCallingSetter.countDown()
+            writerConfig.smtpPassword = NEW_SECRET
         }
 
         try {
             remover.start()
             assertTrue("Removal did not reach secure preference deletion", removalEntered.await(5, TimeUnit.SECONDS))
             writer.start()
-            awaitBlocked(writer)
+            assertTrue(
+                "Writer did not reach the setter call",
+                writerCallingSetter.await(5, TimeUnit.SECONDS)
+            )
+            awaitBlockedOnSecretLock(writer, remover)
             assertTrue("Writer should be waiting for the removal transaction", writer.isAlive)
         } finally {
             releaseRemoval.countDown()
@@ -413,17 +435,50 @@ class ConfigManagerTest {
         }
     }, name)
 
-    private fun awaitBlocked(thread: Thread) {
+    private fun awaitBlockedOnSecretLock(thread: Thread, lockOwner: Thread) {
+        val secretLockField = ConfigManager::class.java.getDeclaredField("SECRET_LOCK").apply {
+            isAccessible = true
+        }
+        val secretLockIdentityHashCode = System.identityHashCode(secretLockField.get(null))
+        // java.lang.management is not part of the Android compile classpath, but it is
+        // available when these local unit tests run on the JVM.
+        val threadBean = Class.forName("java.lang.management.ManagementFactory")
+            .getMethod("getThreadMXBean")
+            .invoke(null)
+        val threadMxBeanClass = Class.forName("java.lang.management.ThreadMXBean")
+        val getThreadInfo = threadMxBeanClass.getMethod("getThreadInfo", java.lang.Long.TYPE)
+        val threadInfoClass = Class.forName("java.lang.management.ThreadInfo")
+        val getLockOwnerId = threadInfoClass.getMethod("getLockOwnerId")
+        val getLockInfo = threadInfoClass.getMethod("getLockInfo")
+        val lockInfoClass = Class.forName("java.lang.management.LockInfo")
+        val getIdentityHashCode = lockInfoClass.getMethod("getIdentityHashCode")
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
         while (thread.state != Thread.State.BLOCKED) {
             if (thread.state == Thread.State.TERMINATED) {
-                error("Thread ${thread.name} terminated before blocking on the credential lock")
+                error("Thread ${thread.name} terminated before blocking on SECRET_LOCK")
             }
             check(System.nanoTime() < deadline) {
-                "Thread ${thread.name} did not block on the credential lock"
+                "Thread ${thread.name} did not block on SECRET_LOCK"
             }
             Thread.yield()
         }
+
+        val threadInfo = checkNotNull(getThreadInfo.invoke(threadBean, thread.id)) {
+            "Missing thread info for ${thread.name}"
+        }
+        val lockInfo = checkNotNull(getLockInfo.invoke(threadInfo)) {
+            "Thread ${thread.name} is blocked without lock information"
+        }
+        assertEquals(
+            "Thread ${thread.name} is blocked on a lock owned by an unexpected thread",
+            lockOwner.id,
+            getLockOwnerId.invoke(threadInfo)
+        )
+        assertEquals(
+            "Thread ${thread.name} is blocked on a monitor other than SECRET_LOCK",
+            secretLockIdentityHashCode,
+            getIdentityHashCode.invoke(lockInfo)
+        )
     }
 
     private fun joinThread(thread: Thread) {

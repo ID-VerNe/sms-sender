@@ -8,11 +8,19 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
+internal fun shouldForwardNotification(isServiceEnabled: Boolean): Boolean = isServiceEnabled
+
 class SmsNotificationListener : NotificationListenerService() {
 
     private val scope = CoroutineScope(Dispatchers.IO)
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
+        val config = ConfigManager(applicationContext)
+        if (!shouldForwardNotification(config.isServiceEnabled)) {
+            Log.i("SmsSender_Trace", "转发总开关已关闭，忽略通知")
+            return
+        }
+
         val packageName = sbn.packageName
         
         // 过滤短信应用包名
@@ -30,7 +38,6 @@ class SmsNotificationListener : NotificationListenerService() {
 
         // 转发邮件逻辑
         scope.launch {
-            val config = ConfigManager(applicationContext)
             val db = com.yuuverne.smssender.database.AppDatabase.getDatabase(applicationContext)
             val enabledRules = db.ruleDao().getEnabledRules()
             

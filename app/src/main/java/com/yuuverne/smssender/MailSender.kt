@@ -1,6 +1,5 @@
 package com.yuuverne.smssender
 
-import java.util.Properties
 import javax.mail.Authenticator
 import javax.mail.Message
 import javax.mail.PasswordAuthentication
@@ -26,18 +25,11 @@ object MailSender {
         }
         android.util.Log.d("MailSender", "开始构建邮件会话... Host: ${config.smtpHost}, Target: $finalTarget")
         
-        val props = Properties()
-        props["mail.smtp.host"] = config.smtpHost
-        props["mail.smtp.port"] = config.smtpPort
-        props["mail.smtp.auth"] = "true"
-        // 465 端口走 SSL，587 端口走 STARTTLS
-        if (config.smtpPort.toIntOrNull() == 465) {
-            props["mail.smtp.ssl.enable"] = "true"
-        } else {
-            props["mail.smtp.starttls.enable"] = "true"
-        }
-        props["mail.smtp.connectiontimeout"] = "10000"
-        props["mail.smtp.timeout"] = "15000"
+        val props = buildSmtpProperties(
+            host = config.smtpHost,
+            port = config.smtpPort,
+            useSsl = config.useSsl
+        )
 
         val session = Session.getInstance(props, object : Authenticator() {
             override fun getPasswordAuthentication(): PasswordAuthentication {

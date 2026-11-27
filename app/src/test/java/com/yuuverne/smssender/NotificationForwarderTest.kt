@@ -2,6 +2,10 @@ package com.yuuverne.smssender
 
 import com.yuuverne.smssender.database.SmsDao
 import com.yuuverne.smssender.database.SmsRecord
+import java.util.concurrent.ConcurrentHashMap
+import javax.mail.AuthenticationFailedException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -12,169 +16,243 @@ import org.junit.Test
 class NotificationForwarderTest {
 
     @Test
-    fun sameKeyBodyUpdateIsNotEnqueuedAgainForSameRecipient() = runBlocking {
+    fun workDataContainsDedupMetadataButNotSmtpPassword() {
+        val data = NotificationWorkData.create(
+            recipient = EMAIL_A,
+            subject = "subject",
+            content = "content",
+            dedupKey = DEDUP_KEY,
+            dedupWindowMs = 0L,
+            address = "10086",
+            body = "验证码 1234",
+            timestamp = 1_000L
+        )
+
+        assertEquals(EMAIL_A, data.getString(NotificationWorkData.KEY_RECIPIENT))
+        assertEquals(DEDUP_KEY, data.getString(NotificationWorkData.KEY_DEDUP_KEY))
+        assertEquals(0L, data.getLong(NotificationWorkData.KEY_DEDUP_WINDOW_MS, -1L))
+        assertEquals("10086", data.getString(NotificationWorkData.KEY_ADDRESS))
+        assertEquals("验证码 1234", data.getString(NotificationWorkData.KEY_BODY))
+        assertEquals(1_000L, data.getLong(NotificationWorkData.KEY_TIMESTAMP, -1L))
+        assertFalse(data.keyValueMap.containsKey("smtpPassword"))
+        assertFalse(data.keyValueMap.containsKey("password"))
+    }
+
+    @Test
+    fun workerRecordsDedupOnlyAfterSuccessfulSmtpSend() = runBlocking {
         val dao = FakeSmsDao()
-        var enqueueCount = 0
-        val first = snapshot()
-
-        assertTrue(
-            enqueueNotificationIfNew(dao, recordFor(first, EMAIL_A)) {
-                enqueueCount++
-            }
+        var sendCount = 0
+        var recordsSeenDuringSend = -1
+        val delivery = NotificationDelivery(
+            smsDao = dao,
+            sendEmail = { _, _, _ ->
+                sendCount++
+                recordsSeenDuringSend = dao.records.size
+            },
+            nowMillis = { 10_000L }
         )
 
-        val updated = first.copy(
-            text = "验证码 5678",
-            postedAt = first.postedAt + 5_000L
-        )
-        assertFalse(
-            enqueueNotificationIfNew(dao, recordFor(updated, EMAIL_A)) {
-                enqueueCount++
-            }
+        val result = delivery.deliver()
+
+        assertEquals(DeliveryResult.DELIVERED, result)
+        assertEquals(1, sendCount)
+        assertEquals(0, recordsSeenDuringSend)
+        assertEquals(1, dao.records.size)
+        val record = dao.records.values.single()
+        assertEquals(SmsNotificationPolicy.notificationId(DEDUP_KEY, EMAIL_A), record.smsId)
+        assertEquals(10_000L, record.forwardTime)
+    }
+
+    @Test
+    fun permanentFailureDoesNotRecordAndAllowsLaterRetry() = runBlocking {
+        val dao = FakeSmsDao()
+        var shouldFail = true
+        val delivery = NotificationDelivery(
+            smsDao = dao,
+            sendEmail = { _, _, _ ->
+                if (shouldFail) throw AuthenticationFailedException("bad credentials")
+            },
+            nowMillis = { 10_000L }
         )
 
-        assertEquals(1, enqueueCount)
+        try {
+            delivery.deliver()
+            fail("Expected permanent SMTP failure")
+        } catch (e: AuthenticationFailedException) {
+            assertEquals("bad credentials", e.message)
+        }
+        assertTrue(dao.records.isEmpty())
+
+        shouldFail = false
+        assertEquals(DeliveryResult.DELIVERED, delivery.deliver())
         assertEquals(1, dao.records.size)
     }
 
     @Test
-    fun differentKeysWithSameBodyAreEnqueuedIndependently() = runBlocking {
+    fun recordedDeliveryIsSkippedWithoutSending() = runBlocking {
         val dao = FakeSmsDao()
-        var enqueueCount = 0
-        val first = snapshot()
-        val second = first.copy(key = "com.android.messaging|43|null|0")
-
-        assertTrue(
-            enqueueNotificationIfNew(dao, recordFor(first, EMAIL_A)) {
-                enqueueCount++
-            }
-        )
-        assertTrue(
-            enqueueNotificationIfNew(dao, recordFor(second, EMAIL_A)) {
-                enqueueCount++
-            }
+        dao.insert(record(EMAIL_A, forwardTime = 1_000L))
+        var sendCount = 0
+        val delivery = NotificationDelivery(
+            smsDao = dao,
+            sendEmail = { _, _, _ -> sendCount++ },
+            nowMillis = { 999_999L }
         )
 
-        assertEquals(2, enqueueCount)
-        assertEquals(2, dao.records.size)
+        val result = delivery.deliver(dedupWindowMs = 0L)
+
+        assertEquals(DeliveryResult.SKIPPED, result)
+        assertEquals(0, sendCount)
+        assertEquals(1, dao.records.size)
     }
 
     @Test
-    fun recipientFailureDoesNotRepeatOrBlockSuccessfulRecipient() = runBlocking {
+    fun keyedDedupIsPermanent() = runBlocking {
         val dao = FakeSmsDao()
-        val notification = snapshot()
-        var enqueueA = 0
-        var enqueueB = 0
-
-        assertTrue(
-            enqueueNotificationIfNew(dao, recordFor(notification, EMAIL_A)) {
-                enqueueA++
-            }
-        )
-        try {
-            enqueueNotificationIfNew(dao, recordFor(notification, EMAIL_B)) {
-                enqueueB++
-                throw IllegalStateException("enqueue failed")
-            }
-            fail("Expected enqueue failure")
-        } catch (e: IllegalStateException) {
-            assertEquals("enqueue failed", e.message)
-        }
-
-        assertFalse(
-            enqueueNotificationIfNew(dao, recordFor(notification, EMAIL_A)) {
-                enqueueA++
-            }
-        )
-        assertTrue(
-            enqueueNotificationIfNew(dao, recordFor(notification, EMAIL_B)) {
-                enqueueB++
-            }
+        dao.insert(record(EMAIL_A, forwardTime = 0L))
+        var sendCount = 0
+        val delivery = NotificationDelivery(
+            smsDao = dao,
+            sendEmail = { _, _, _ -> sendCount++ },
+            nowMillis = { Long.MAX_VALUE / 4 }
         )
 
-        assertEquals(1, enqueueA)
-        assertEquals(2, enqueueB)
-        assertEquals(2, dao.records.size)
-        assertTrue(dao.isForwarded(recordFor(notification, EMAIL_A).smsId))
-        assertTrue(dao.isForwarded(recordFor(notification, EMAIL_B).smsId))
+        assertEquals(DeliveryResult.SKIPPED, delivery.deliver(dedupWindowMs = 0L))
+        assertEquals(0, sendCount)
     }
 
     @Test
-    fun noKeyFallbackDeduplicatesOnlyWithinWindow() = runBlocking {
+    fun rollingWindowUsesSuccessTimeAndBoundaryIsExclusive() = runBlocking {
         val dao = FakeSmsDao()
-        val first = snapshot(key = null, postedAt = 1_000L)
-        var enqueueCount = 0
-
-        assertTrue(
-            enqueueNotificationIfNew(dao, recordFor(first, EMAIL_A)) {
-                enqueueCount++
-            }
-        )
-        assertFalse(
-            enqueueNotificationIfNew(dao, recordFor(first.copy(postedAt = 31_000L), EMAIL_A)) {
-                enqueueCount++
-            }
-        )
-        assertTrue(
-            enqueueNotificationIfNew(dao, recordFor(first.copy(postedAt = 61_000L), EMAIL_A)) {
-                enqueueCount++
-            }
+        dao.insert(record(EMAIL_A, forwardTime = 1_000L))
+        var now = 60_999L
+        var sendCount = 0
+        val delivery = NotificationDelivery(
+            smsDao = dao,
+            sendEmail = { _, _, _ -> sendCount++ },
+            nowMillis = { now }
         )
 
-        assertEquals(2, enqueueCount)
-        assertEquals(2, dao.records.size)
+        assertEquals(DeliveryResult.SKIPPED, delivery.deliver(dedupWindowMs = WINDOW_MS))
+        assertEquals(0, sendCount)
+
+        now = 61_000L
+        assertEquals(DeliveryResult.DELIVERED, delivery.deliver(dedupWindowMs = WINDOW_MS))
+        assertEquals(1, sendCount)
+        assertEquals(61_000L, dao.records.values.single().forwardTime)
     }
 
     @Test
-    fun enqueueFailureDoesNotWriteDedupRecord() = runBlocking {
+    fun differentRecipientsAreIndependent() = runBlocking {
         val dao = FakeSmsDao()
-        val record = recordFor(snapshot(), EMAIL_A)
-        var enqueueCalled = false
+        var sendCount = 0
+        val delivery = NotificationDelivery(
+            smsDao = dao,
+            sendEmail = { _, _, _ -> sendCount++ },
+            nowMillis = { 10_000L }
+        )
 
-        try {
-            enqueueNotificationIfNew(dao, record) {
-                enqueueCalled = true
-                throw IllegalStateException("enqueue failed")
-            }
-            fail("Expected enqueue failure")
-        } catch (e: IllegalStateException) {
-            assertEquals("enqueue failed", e.message)
-        }
+        assertEquals(DeliveryResult.DELIVERED, delivery.deliver(recipient = EMAIL_A))
+        assertEquals(DeliveryResult.DELIVERED, delivery.deliver(recipient = EMAIL_B))
 
-        assertTrue(enqueueCalled)
-        assertFalse(dao.isForwarded(record.smsId))
-        assertTrue(dao.records.isEmpty())
+        assertEquals(2, sendCount)
+        assertEquals(2, dao.records.size)
+        assertTrue(
+            SmsNotificationPolicy.notificationId(DEDUP_KEY, EMAIL_A) !=
+                SmsNotificationPolicy.notificationId(DEDUP_KEY, EMAIL_B)
+        )
     }
 
-    private fun snapshot(
-        key: String? = "com.android.messaging|42|null|0",
-        postedAt: Long = 1_000L
-    ) = NotificationSnapshot(
-        packageName = "com.android.messaging",
-        key = key,
-        title = "10086",
-        text = "验证码 1234",
-        postedAt = postedAt
+    @Test
+    fun sameKeyWithChangedBodyIsSkipped() = runBlocking {
+        val dao = FakeSmsDao()
+        var sendCount = 0
+        val delivery = NotificationDelivery(
+            smsDao = dao,
+            sendEmail = { _, _, _ -> sendCount++ },
+            nowMillis = { 10_000L }
+        )
+
+        assertEquals(DeliveryResult.DELIVERED, delivery.deliver(body = "验证码 1234"))
+        assertEquals(
+            DeliveryResult.SKIPPED,
+            delivery.deliver(
+                subject = "updated subject",
+                content = "updated content",
+                body = "验证码 5678"
+            )
+        )
+
+        assertEquals(1, sendCount)
+        assertEquals("验证码 1234", dao.records.values.single().body)
+    }
+
+    @Test
+    fun concurrentDeliveryForSameIdentitySendsOnlyOnce() = runBlocking {
+        val dao = FakeSmsDao()
+        val firstEntered = CompletableDeferred<Unit>()
+        val releaseFirst = CompletableDeferred<Unit>()
+        var sendCount = 0
+        val delivery = NotificationDelivery(
+            smsDao = dao,
+            sendEmail = { _, _, _ ->
+                sendCount++
+                firstEntered.complete(Unit)
+                releaseFirst.await()
+            },
+            nowMillis = { 10_000L }
+        )
+
+        val first = async { delivery.deliver(dedupWindowMs = 0L) }
+        firstEntered.await()
+        val second = async { delivery.deliver(dedupWindowMs = 0L) }
+        releaseFirst.complete(Unit)
+
+        val results = listOf(first.await(), second.await())
+        assertEquals(1, sendCount)
+        assertEquals(setOf(DeliveryResult.DELIVERED, DeliveryResult.SKIPPED), results.toSet())
+        assertEquals(1, dao.records.size)
+    }
+
+    private suspend fun NotificationDelivery.deliver(
+        dedupWindowMs: Long = 0L,
+        recipient: String = EMAIL_A,
+        subject: String = "subject",
+        content: String = "content",
+        body: String = "验证码 1234"
+    ): DeliveryResult = deliver(
+        dedupKey = DEDUP_KEY,
+        dedupWindowMs = dedupWindowMs,
+        recipient = recipient,
+        subject = subject,
+        content = content,
+        address = "10086",
+        body = body,
+        timestamp = 1_000L
     )
 
-    private fun recordFor(snapshot: NotificationSnapshot, recipient: String) = SmsRecord(
-        smsId = SmsNotificationPolicy.notificationId(snapshot, recipient),
-        address = snapshot.title,
-        body = snapshot.text,
-        timestamp = snapshot.postedAt
+    private fun record(recipient: String, forwardTime: Long) = SmsRecord(
+        smsId = SmsNotificationPolicy.notificationId(DEDUP_KEY, recipient),
+        address = "10086",
+        body = "验证码 1234",
+        timestamp = 1_000L,
+        forwardTime = forwardTime
     )
 
     private class FakeSmsDao : SmsDao {
-        val records = linkedMapOf<Long, SmsRecord>()
+        val records = ConcurrentHashMap<Long, SmsRecord>()
 
-        override suspend fun isForwarded(id: Long): Boolean = records.containsKey(id)
+        override suspend fun isForwardedWithin(smsId: Long, windowMs: Long, now: Long): Boolean =
+            records[smsId]?.let { record ->
+                windowMs == 0L || record.forwardTime > now - windowMs
+            } ?: false
 
-        override suspend fun isDuplicate(address: String, body: String, timestamp: Long): Boolean =
-            records.values.any {
-                it.address == address &&
-                    it.body == body &&
-                    kotlin.math.abs(it.timestamp - timestamp) < 60_000L
+        override suspend fun deleteExpired(smsId: Long, cutoff: Long) {
+            val record = records[smsId]
+            if (record != null && record.forwardTime <= cutoff) {
+                records.remove(smsId)
             }
+        }
 
         override suspend fun insert(record: SmsRecord) {
             if (!records.containsKey(record.smsId)) {
@@ -188,5 +266,7 @@ class NotificationForwarderTest {
     private companion object {
         const val EMAIL_A = "a@example.com"
         const val EMAIL_B = "b@example.com"
+        const val DEDUP_KEY = "key:com.android.messaging\u0000com.android.messaging|42|null|0"
+        const val WINDOW_MS = SmsNotificationPolicy.CONTENT_DEDUP_WINDOW_MS
     }
 }

@@ -6,7 +6,6 @@ import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import android.util.Log
 import com.yuuverne.smssender.database.AppDatabase
-import com.yuuverne.smssender.database.SmsRecord
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineExceptionHandler
@@ -96,7 +95,6 @@ class SmsNotificationListener : NotificationListenerService() {
     private suspend fun forwardIfNew(snapshot: NotificationSnapshot) {
         val config = ConfigManager(applicationContext)
         val db = AppDatabase.getDatabase(applicationContext)
-        val smsDao = db.smsDao()
         val enabledRules = db.ruleDao().getEnabledRules()
 
         val targetEmails = linkedSetOf<String>()
@@ -114,35 +112,30 @@ class SmsNotificationListener : NotificationListenerService() {
 
         val smartSubject = ExtractionUtils.getSmartSubject(config, snapshot.title, snapshot.text)
         val mailContent = "检测到系统通知栏短信：\n来自：${snapshot.title}\n内容：${snapshot.text}\n\n(提示：这是通过监听通知栏获取的内容，可绕过系统验证码读取限制)\n\n——来自SmsSender"
+        val dedupKey = SmsNotificationPolicy.notificationKey(snapshot)
+        val dedupWindowMs = SmsNotificationPolicy.dedupWindowMs(snapshot)
 
         targetEmails.forEach { email ->
-            val record = SmsRecord(
-                smsId = SmsNotificationPolicy.notificationId(snapshot, email),
-                address = snapshot.title,
-                body = snapshot.text,
-                timestamp = snapshot.postedAt
-            )
             val workName = SmsNotificationPolicy.uniqueWorkName(snapshot, email)
 
             try {
-                val enqueued = enqueueNotificationIfNew(smsDao, record) {
-                    MailForwardWorker.enqueueUnique(
-                        context = applicationContext,
-                        workName = workName,
-                        recipient = email,
-                        subject = smartSubject,
-                        content = mailContent
-                    )
-                }
-                if (enqueued) {
-                    Log.i("SmsSender_Trace", "转发至 $email 已加入发送队列")
-                } else {
-                    Log.i("SmsSender_Trace", "通知已转发至 $email，跳过重复回调")
-                }
+                enqueueUniqueNotificationWork(
+                    context = applicationContext,
+                    workName = workName,
+                    recipient = email,
+                    subject = smartSubject,
+                    content = mailContent,
+                    dedupKey = dedupKey,
+                    dedupWindowMs = dedupWindowMs,
+                    address = snapshot.title,
+                    body = snapshot.text,
+                    timestamp = snapshot.postedAt
+                )
+                Log.i("SmsSender_Trace", "转发至 $email 已加入发送队列")
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                Log.e("SmsSender_Trace", "转发至 $email 入队失败，未记录去重标记", e)
+                Log.e("SmsSender_Trace", "转发至 $email 入队失败，后续回调可重试", e)
             }
         }
     }

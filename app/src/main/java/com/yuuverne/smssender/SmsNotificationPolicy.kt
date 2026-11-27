@@ -25,24 +25,35 @@ object SmsNotificationPolicy {
         return true
     }
 
+    /**
+     * Stable identity for one notification callback series.
+     *
+     * When Android provides a notification key we use it so updates to the same
+     * notification keep the same identity. Without a key we hash only stable
+     * content fields; the rolling time window is applied by the DAO at delivery
+     * time instead of being baked into the key.
+     */
     fun notificationKey(snapshot: NotificationSnapshot): String {
         val stableKey = snapshot.key?.takeIf { it.isNotBlank() }
         return if (stableKey != null) {
-            // StatusBarNotification.key 已包含包名、用户、id 和 tag；再显式带上包名，
-            // 避免不同应用出现相同 key 字符串时互相影响。
+            // StatusBarNotification.key already contains package/user/id/tag.
+            // Include the package explicitly to avoid cross-app key collisions.
             "key:${snapshot.packageName}\u0000$stableKey"
         } else {
-            // 无 key 时才退化为标题 + 正文 + 时间窗口。
             val contentHash = sha256Hex(snapshot.packageName, snapshot.title, snapshot.text)
-            "content:$contentHash:${snapshot.postedAt / CONTENT_DEDUP_WINDOW_MS}"
+            "content:$contentHash"
         }
     }
 
-    fun notificationId(snapshot: NotificationSnapshot): Long =
-        sha256Bytes(notificationKey(snapshot)).toLong()
+    /** 0 means permanent dedup; a positive value is a rolling success window. */
+    fun dedupWindowMs(snapshot: NotificationSnapshot): Long =
+        if (snapshot.key.isNullOrBlank()) CONTENT_DEDUP_WINDOW_MS else 0L
 
     fun notificationId(snapshot: NotificationSnapshot, recipient: String): Long =
-        recipientFingerprint(snapshot, recipient).toLong()
+        notificationId(notificationKey(snapshot), recipient)
+
+    fun notificationId(dedupKey: String, recipient: String): Long =
+        sha256Bytes(dedupKey, recipient).toLong()
 
     fun uniqueWorkName(snapshot: NotificationSnapshot, recipient: String): String =
         "sms-notification:${recipientFingerprint(snapshot, recipient).toHex()}"

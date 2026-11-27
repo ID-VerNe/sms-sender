@@ -56,6 +56,7 @@ class SmsNotificationPolicyTest {
             SmsNotificationPolicy.uniqueWorkName(first, EMAIL_A),
             SmsNotificationPolicy.uniqueWorkName(updated, EMAIL_A)
         )
+        assertEquals(0L, SmsNotificationPolicy.dedupWindowMs(updated))
     }
 
     @Test
@@ -88,25 +89,39 @@ class SmsNotificationPolicyTest {
     }
 
     @Test
-    fun sameContentWithoutStableKeyIsDuplicateWithinWindow() {
+    fun sameContentWithoutStableKeyHasStableIdentityAcrossTimestamps() {
         val first = snapshot(key = null, postedAt = 1_000L)
-        val updated = first.copy(postedAt = 31_000L)
+        val later = first.copy(postedAt = 61_000L)
 
         assertEquals(
+            SmsNotificationPolicy.notificationKey(first),
+            SmsNotificationPolicy.notificationKey(later)
+        )
+        assertEquals(
             SmsNotificationPolicy.notificationId(first, EMAIL_A),
-            SmsNotificationPolicy.notificationId(updated, EMAIL_A)
+            SmsNotificationPolicy.notificationId(later, EMAIL_A)
+        )
+        assertEquals(
+            SmsNotificationPolicy.uniqueWorkName(first, EMAIL_A),
+            SmsNotificationPolicy.uniqueWorkName(later, EMAIL_A)
+        )
+        assertEquals(
+            SmsNotificationPolicy.CONTENT_DEDUP_WINDOW_MS,
+            SmsNotificationPolicy.dedupWindowMs(later)
         )
     }
 
     @Test
-    fun sameContentWithoutStableKeyIsNewOutsideWindow() {
-        val first = snapshot(key = null, postedAt = 1_000L)
-        val later = first.copy(postedAt = 61_000L)
+    fun noKeyFallbackDoesNotUseFixedTimeBuckets() {
+        val first = snapshot(key = null, postedAt = 59_999L)
+        val acrossBoundary = first.copy(postedAt = 60_001L)
 
-        assertNotEquals(
-            SmsNotificationPolicy.notificationId(first, EMAIL_A),
-            SmsNotificationPolicy.notificationId(later, EMAIL_A)
+        assertEquals(
+            SmsNotificationPolicy.notificationKey(first),
+            SmsNotificationPolicy.notificationKey(acrossBoundary)
         )
+        assertFalse(SmsNotificationPolicy.notificationKey(first).contains("59999"))
+        assertFalse(SmsNotificationPolicy.notificationKey(first).contains("60001"))
     }
 
     @Test
@@ -131,6 +146,10 @@ class SmsNotificationPolicyTest {
         assertEquals(
             SmsNotificationPolicy.notificationId(blankKey, EMAIL_A),
             SmsNotificationPolicy.notificationId(noKey, EMAIL_A)
+        )
+        assertEquals(
+            SmsNotificationPolicy.CONTENT_DEDUP_WINDOW_MS,
+            SmsNotificationPolicy.dedupWindowMs(blankKey)
         )
     }
 

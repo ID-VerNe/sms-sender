@@ -4,7 +4,7 @@
 
 ## SMS Capture Flow
 
-`onNotificationPosted()` 被触发时：通过 `isSmsPackage()` 结合系统默认短信应用与已知 OEM 包名进行精确匹配 → 从 `Notification.extras` 提取标题（发件人）和正文 → 调用 [[ExtractionUtils]] 的 `getSmartSubject()` 生成主题 → 查询 [[database]] 中的转发规则 → 遍历目标邮箱列表发送邮件。
+`onNotificationPosted()` 被触发时：通过 `isSmsPackage()` 结合系统默认短信应用与已知 OEM 包名进行精确匹配 → 从 `Notification.extras` 提取标题（发件人）和正文 → 调用 [[ExtractionUtils]] 的 `getSmartSubject()` 生成主题 → 查询 [[database]] 中的转发规则 → 遍历目标邮箱列表，通过 [[NotificationForwarder]] 为每个收件人入队 WorkManager。通知主路径不直接同步发送邮件。
 
 ## Rule Matching
 
@@ -19,8 +19,8 @@
 内部模块和外部库依赖。
 
 - [[ExtractionUtils]] — 生成邮件主题
-- [[MailSender]] — 发送邮件
-- [[ConfigManager]] — 读取 SMTP 配置和默认接收邮箱
+- [[NotificationForwarder]] — 按收件人异步入队 WorkManager
+- [[ConfigManager]] — 读取总开关和默认接收邮箱
 - [[database#ForwardingRuleDao]] — 查询转发规则
 
 ## Consumed By
@@ -34,5 +34,6 @@
 该模块特有的错误条件。
 
 - 通知正文为空 → 跳过，不转发
-- 无有效收件人邮箱 → 日志警告"无有效收件人邮箱，取消转发"
-- 个别邮箱发送失败 → 不影响其他邮箱的发送，仅记录错误日志
+- 无有效收件人邮箱 → 日志警告“无有效收件人邮箱，取消转发”
+- 个别收件人入队失败 → 不影响其他收件人，仅记录错误日志，后续同 key 回调可重试
+- 邮件永久发送失败 → Worker 不写去重记录，后续同 key 回调可重新入队重试

@@ -312,7 +312,6 @@ object PickupCodeExtractor {
 
         // 3. 以取件码位置为界，分割前文和后文
         val codeIdx = normalized.indexOf(code)
-        val beforeCode = if (codeIdx >= 0) normalized.substring(0, codeIdx) else normalized
         val textForCompany = if (codeIdx >= 0) normalized.substring(0, codeIdx) else normalized
 
         // 4. 识别快递公司

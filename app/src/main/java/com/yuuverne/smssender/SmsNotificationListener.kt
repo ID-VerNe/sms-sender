@@ -7,6 +7,37 @@ import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import com.yuuverne.smssender.database.ForwardingRule
+
+internal fun isSmsPackage(packageName: String): Boolean {
+    return packageName.contains("mms", ignoreCase = true) ||
+        packageName.contains("messaging", ignoreCase = true)
+}
+
+internal fun shouldForwardNotification(isServiceEnabled: Boolean, text: String): Boolean {
+    return isServiceEnabled && text.isNotEmpty()
+}
+
+internal fun resolveNotificationRecipients(
+    receiverEmail: String,
+    rules: List<ForwardingRule>,
+    text: String,
+): Set<String> {
+    val recipients = linkedSetOf<String>()
+    receiverEmail.trim().takeIf { it.isNotEmpty() }?.let(recipients::add)
+    rules.asSequence()
+        .filter { it.isEnabled && it.keyword.isNotBlank() }
+        .filter { text.contains(it.keyword, ignoreCase = true) }
+        .map { it.targetEmail.trim() }
+        .filter { it.isNotEmpty() }
+        .forEach(recipients::add)
+    return recipients
+}
+
+internal fun buildNotificationEmailContent(title: String, text: String): String {
+    return "检测到系统通知栏短信：\n来自：$title\n内容：$text\n\n" +
+        "(提示：这是通过监听通知栏获取的内容，可绕过系统验证码读取限制)\n\n——来自SmsSender"
+}
 
 class SmsNotificationListener : NotificationListenerService() {
 
@@ -16,7 +47,7 @@ class SmsNotificationListener : NotificationListenerService() {
         val packageName = sbn.packageName
         
         // 过滤短信应用包名
-        if (!packageName.contains("mms") && !packageName.contains("messaging")) {
+        if (!isSmsPackage(packageName)) {
             return
         }
 
@@ -24,28 +55,20 @@ class SmsNotificationListener : NotificationListenerService() {
         val title = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString() ?: "未知号码"
         val text = extras.getCharSequence(Notification.EXTRA_TEXT)?.toString() ?: ""
 
-        if (text.isEmpty()) return
+        val config = ConfigManager(applicationContext)
+        if (!shouldForwardNotification(config.isServiceEnabled, text)) {
+            return
+        }
 
         Log.i("SmsSender_Trace", "【通知捕获】来自: $title, 内容: $text")
 
         // 转发邮件逻辑
         scope.launch {
-            val config = ConfigManager(applicationContext)
             val db = com.yuuverne.smssender.database.AppDatabase.getDatabase(applicationContext)
             val enabledRules = db.ruleDao().getEnabledRules()
             
             // 构建待发送邮箱列表 (去重)
-            val targetEmails = mutableSetOf<String>()
-            if (config.receiverEmail.isNotEmpty()) {
-                targetEmails.add(config.receiverEmail)
-            }
-            
-            // 匹配关键词规则
-            enabledRules.forEach { rule ->
-                if (text.contains(rule.keyword, ignoreCase = true)) {
-                    targetEmails.add(rule.targetEmail)
-                }
-            }
+            val targetEmails = resolveNotificationRecipients(config.receiverEmail, enabledRules, text)
 
             if (targetEmails.isEmpty()) {
                 Log.w("SmsSender_Trace", "无有效收件人邮箱，取消转发")
@@ -58,7 +81,7 @@ class SmsNotificationListener : NotificationListenerService() {
                 MailSender.sendEmail(
                     config = config,
                     subject = smartSubject,
-                    content = "检测到系统通知栏短信：\n来自：$title\n内容：$text\n\n(提示：这是通过监听通知栏获取的内容，可绕过系统验证码读取限制)\n\n——来自SmsSender",
+                    content = buildNotificationEmailContent(title, text),
                     targetOverride = email,
                     onSuccess = {
                         Log.i("SmsSender_Trace", "转发至 $email 成功")

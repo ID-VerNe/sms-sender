@@ -9,6 +9,14 @@ import javax.mail.Transport
 import javax.mail.internet.InternetAddress
 import javax.mail.internet.MimeMessage
 
+internal fun smtpSecurityProperties(port: String): Map<String, String> {
+    return if (port.toIntOrNull() == 465) {
+        mapOf("mail.smtp.ssl.enable" to "true")
+    } else {
+        mapOf("mail.smtp.starttls.enable" to "true")
+    }
+}
+
 object MailSender {
 
     fun sendEmail(
@@ -30,12 +38,8 @@ object MailSender {
         props["mail.smtp.host"] = config.smtpHost
         props["mail.smtp.port"] = config.smtpPort
         props["mail.smtp.auth"] = "true"
-        // 465 端口走 SSL，587 端口走 STARTTLS
-        if (config.smtpPort.toIntOrNull() == 465) {
-            props["mail.smtp.ssl.enable"] = "true"
-        } else {
-            props["mail.smtp.starttls.enable"] = "true"
-        }
+        // 465 端口走 SSL，其他端口走 STARTTLS
+        props.putAll(smtpSecurityProperties(config.smtpPort))
         props["mail.smtp.connectiontimeout"] = "10000"
         props["mail.smtp.timeout"] = "15000"
 

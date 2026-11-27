@@ -1,0 +1,63 @@
+package com.yuuverne.smssender
+
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
+import org.junit.Test
+
+class SmsNotificationListenerTest {
+
+    @Test
+    fun selectsBigTextWhenOnlyBigTextIsPresent() {
+        val result = selectNotificationText(
+            bigText = "这是一条完整的长短信",
+            textLines = null,
+            text = null
+        )
+
+        assertEquals("这是一条完整的长短信", result)
+    }
+
+    @Test
+    fun joinsTextLinesWhenOnlyTextLinesArePresent() {
+        val result = selectNotificationText(
+            bigText = null,
+            textLines = arrayOf("第一行", "第二行", "第三行"),
+            text = null
+        )
+
+        assertEquals("第一行\n第二行\n第三行", result)
+    }
+
+    @Test
+    fun selectsTextWhenOnlyTextIsPresent() {
+        val result = selectNotificationText(
+            bigText = null,
+            textLines = null,
+            text = "普通短信"
+        )
+
+        assertEquals("普通短信", result)
+    }
+
+    @Test
+    fun prefersBigTextWhenMultipleFieldsArePresent() {
+        val result = selectNotificationText(
+            bigText = "完整长短信",
+            textLines = arrayOf("截断内容"),
+            text = "更短的内容"
+        )
+
+        assertEquals("完整长短信", result)
+    }
+
+    @Test
+    fun returnsNullWhenAllFieldsAreEmpty() {
+        val result = selectNotificationText(
+            bigText = "",
+            textLines = emptyArray(),
+            text = ""
+        )
+
+        assertNull(result)
+    }
+}

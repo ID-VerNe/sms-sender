@@ -18,12 +18,14 @@ DAO 接口，提供 `getAllRulesFlow()`（Flow 观察所有规则）、`getEnabl
 
 已成功投递的短信通知记录。`smsId` 保留原字段名，但语义是“通知 `dedupKey` + 收件人”的稳定 SHA-256 指纹，作为主键实现收件人级幂等。其他字段为：
 
-- `address`：通知标题/发件人。
-- `body`：通知正文。
+- `address`：原始通知标题/发件人的 SHA-256 小写十六进制哈希，不保存原文。
+- `body`：原始通知正文的 SHA-256 小写十六进制哈希，不保存原文。
 - `timestamp`：通知发布时间。
 - `forwardTime`：SMTP 真正成功的时间，也是滚动去重窗口的基准。
 
-记录只由 `MailForwardWorker` 在 SMTP 发送成功后写入；入队、临时失败和永久失败均不写记录。
+记录只由 `MailForwardWorker` 在 SMTP 发送成功后写入；写入前分别对 `address` 和 `body` 的原始 UTF-8 字符串计算 SHA-256，`smsId`、`timestamp` 和 `forwardTime` 保持原值。入队、临时失败和永久失败均不写记录。
+
+去重表仅保留哈希元数据，不包含通知标题、发件人或正文原文。`sms_sender_db` 仍在 legacy Auto Backup、cloud backup 和 device-transfer 规则中整体排除，不参与任何备份或设备迁移；`androidx.work.workdb` 也继续排除。数据库 schema 和版本号不变。
 
 ## SmsDao
 

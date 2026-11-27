@@ -133,8 +133,8 @@ internal class NotificationDelivery(
                 smsDao.insert(
                     SmsRecord(
                         smsId = smsId,
-                        address = address,
-                        body = body,
+                        address = Sha256.hash(address),
+                        body = Sha256.hash(body),
                         timestamp = timestamp,
                         forwardTime = forwardedAt
                     )

@@ -85,7 +85,7 @@ class SmsNotificationListener : NotificationListenerService() {
 
         if (!SmsNotificationPolicy.shouldForward(snapshot)) return
 
-        Log.i("SmsSender_Trace", "【通知捕获】来自: $title, 内容: $text")
+        Log.i("SmsSender_Trace", SensitiveLog.notificationLog(packageName, title, text))
 
         scope.launch {
             forwardIfNew(snapshot)

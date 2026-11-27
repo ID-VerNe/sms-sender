@@ -6,9 +6,10 @@
    See https://developer.android.com/about/versions/12/backup-restore
 -->
 <full-backup-content>
-    <!--
-   <include domain="sharedpref" path="."/>
-   <exclude domain="sharedpref" path="device.xml"/>
--->
+    <!-- 加密秘密不备份；旧配置在迁移完成前仍可能含明文凭证，因此整文件排除。 -->
+    <exclude domain="sharedpref" path="sms_sender_secure_prefs.xml" />
+    <exclude domain="sharedpref" path="sms_sender_prefs.xml" />
     <exclude domain="database" path="androidx.work.workdb" />
+    <!-- 去重表只保留哈希元数据，仍不参与自动备份。 -->
+    <exclude domain="database" path="sms_sender_db" />
 </full-backup-content>

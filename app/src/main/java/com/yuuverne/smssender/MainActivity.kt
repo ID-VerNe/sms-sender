@@ -282,13 +282,22 @@ fun SettingsPanel(config: ConfigManager) {
     ) {
         Text("SMTP 设置", style = MaterialTheme.typography.titleMedium)
         OutlinedTextField(value = smtpHost, onValueChange = { smtpHost = it; config.smtpHost = it }, label = { Text("SMTP 服务器") }, modifier = Modifier.fillMaxWidth())
-        OutlinedTextField(value = smtpPort, onValueChange = { smtpPort = it; config.smtpPort = it }, label = { Text("端口") }, modifier = Modifier.fillMaxWidth())
+        OutlinedTextField(
+            value = smtpPort,
+            onValueChange = {
+                smtpPort = it
+                config.smtpPort = it
+                useSsl = config.useSsl
+            },
+            label = { Text("端口") },
+            modifier = Modifier.fillMaxWidth()
+        )
         OutlinedTextField(value = smtpEmail, onValueChange = { smtpEmail = it; config.smtpEmail = it }, label = { Text("发件邮箱") }, modifier = Modifier.fillMaxWidth())
         OutlinedTextField(value = smtpPassword, onValueChange = { smtpPassword = it; config.smtpPassword = it }, label = { Text("授权码") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
         
         Row(verticalAlignment = Alignment.CenterVertically) {
             Checkbox(checked = useSsl, onCheckedChange = { useSsl = it; config.useSsl = it })
-            Text("使用 SSL")
+            Text("使用 SSL（取消则使用 STARTTLS）")
         }
 
         HorizontalDivider()

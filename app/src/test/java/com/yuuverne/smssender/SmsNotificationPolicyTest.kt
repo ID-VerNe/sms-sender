@@ -1,5 +1,7 @@
 package com.yuuverne.smssender
 
+import androidx.work.ExistingWorkPolicy
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
@@ -33,80 +35,108 @@ class SmsNotificationPolicyTest {
     }
 
     @Test
-    fun nonSmsPackageIsFiltered() {
-        assertFalse(
-            SmsNotificationPolicy.shouldForward(
-                snapshot().copy(packageName = "com.example.other")
-            )
-        )
-    }
-
-    @Test
     fun blankTextIsFiltered() {
         assertFalse(SmsNotificationPolicy.shouldForward(snapshot(text = "   ")))
     }
 
     @Test
-    fun sameNotificationAndContentHasStableId() {
+    fun sameKeyWithChangedBodyStillHasSameRecipientIdentity() {
         val first = snapshot()
-        val updated = first.copy(postedAt = first.postedAt + 5_000L)
+        val updated = first.copy(
+            title = "10086（新排版）",
+            text = "验证码 5678",
+            postedAt = first.postedAt + 5_000L
+        )
 
-        assertNotEquals(first.postedAt, updated.postedAt)
-        assertTrue(
-            SmsNotificationPolicy.notificationId(first) ==
-                SmsNotificationPolicy.notificationId(updated)
+        assertEquals(
+            SmsNotificationPolicy.notificationId(first, EMAIL_A),
+            SmsNotificationPolicy.notificationId(updated, EMAIL_A)
+        )
+        assertEquals(
+            SmsNotificationPolicy.uniqueWorkName(first, EMAIL_A),
+            SmsNotificationPolicy.uniqueWorkName(updated, EMAIL_A)
         )
     }
 
     @Test
-    fun sameNotificationKeyWithChangedContentGetsNewId() {
+    fun differentKeysWithSameBodyHaveDifferentIdentities() {
         val first = snapshot()
-        val changed = first.copy(text = "验证码 5678")
+        val second = first.copy(key = "com.android.messaging|43|null|0")
 
         assertNotEquals(
-            SmsNotificationPolicy.notificationId(first),
-            SmsNotificationPolicy.notificationId(changed)
+            SmsNotificationPolicy.notificationId(first, EMAIL_A),
+            SmsNotificationPolicy.notificationId(second, EMAIL_A)
+        )
+        assertNotEquals(
+            SmsNotificationPolicy.uniqueWorkName(first, EMAIL_A),
+            SmsNotificationPolicy.uniqueWorkName(second, EMAIL_A)
         )
     }
 
     @Test
-    fun sameNotificationUpdateIsDuplicate() {
-        val first = snapshot()
-        val updated = first.copy(postedAt = first.postedAt + 5_000L)
+    fun differentRecipientsHaveIndependentIdentitiesAndWorkNames() {
+        val notification = snapshot()
 
-        assertTrue(SmsNotificationPolicy.isDuplicate(updated, listOf(recordFor(first))))
-    }
-
-    @Test
-    fun changedContentForSameNotificationKeyIsNotDuplicate() {
-        val first = snapshot()
-        val changed = first.copy(text = "验证码 5678")
-
-        assertFalse(SmsNotificationPolicy.isDuplicate(changed, listOf(recordFor(first))))
+        assertNotEquals(
+            SmsNotificationPolicy.notificationId(notification, EMAIL_A),
+            SmsNotificationPolicy.notificationId(notification, EMAIL_B)
+        )
+        assertNotEquals(
+            SmsNotificationPolicy.uniqueWorkName(notification, EMAIL_A),
+            SmsNotificationPolicy.uniqueWorkName(notification, EMAIL_B)
+        )
     }
 
     @Test
     fun sameContentWithoutStableKeyIsDuplicateWithinWindow() {
-        val first = snapshot(key = null)
-        val updated = first.copy(postedAt = first.postedAt + 30_000L)
+        val first = snapshot(key = null, postedAt = 1_000L)
+        val updated = first.copy(postedAt = 31_000L)
 
-        assertTrue(SmsNotificationPolicy.isDuplicate(updated, listOf(recordFor(first))))
+        assertEquals(
+            SmsNotificationPolicy.notificationId(first, EMAIL_A),
+            SmsNotificationPolicy.notificationId(updated, EMAIL_A)
+        )
     }
 
     @Test
-    fun sameContentOutsideWindowIsNotDuplicate() {
-        val first = snapshot(key = null)
-        val later = first.copy(postedAt = first.postedAt + 60_000L)
+    fun sameContentWithoutStableKeyIsNewOutsideWindow() {
+        val first = snapshot(key = null, postedAt = 1_000L)
+        val later = first.copy(postedAt = 61_000L)
 
-        assertFalse(SmsNotificationPolicy.isDuplicate(later, listOf(recordFor(first))))
+        assertNotEquals(
+            SmsNotificationPolicy.notificationId(first, EMAIL_A),
+            SmsNotificationPolicy.notificationId(later, EMAIL_A)
+        )
     }
 
     @Test
-    fun differentSenderWithSameBodyIsNotDuplicate() {
-        val first = snapshot()
-        val otherSender = first.copy(title = "10010")
+    fun noKeyFallbackIncludesTitleAndBody() {
+        val first = snapshot(key = null)
 
-        assertFalse(SmsNotificationPolicy.isDuplicate(otherSender, listOf(recordFor(first))))
+        assertNotEquals(
+            SmsNotificationPolicy.notificationId(first, EMAIL_A),
+            SmsNotificationPolicy.notificationId(first.copy(title = "10010"), EMAIL_A)
+        )
+        assertNotEquals(
+            SmsNotificationPolicy.notificationId(first, EMAIL_A),
+            SmsNotificationPolicy.notificationId(first.copy(text = "验证码 5678"), EMAIL_A)
+        )
+    }
+
+    @Test
+    fun blankKeyUsesContentFallback() {
+        val blankKey = snapshot(key = "   ")
+        val noKey = blankKey.copy(key = null)
+
+        assertEquals(
+            SmsNotificationPolicy.notificationId(blankKey, EMAIL_A),
+            SmsNotificationPolicy.notificationId(noKey, EMAIL_A)
+        )
+    }
+
+    @Test
+    fun notificationWorkUsesKeepPolicy() {
+        assertEquals(ExistingWorkPolicy.KEEP, NotificationWorkPolicy.existingWorkPolicy)
     }
 
     private fun snapshot(
@@ -130,10 +160,8 @@ class SmsNotificationPolicyTest {
         isForegroundService = isForegroundService
     )
 
-    private fun recordFor(snapshot: NotificationSnapshot) = ForwardedNotification(
-        id = SmsNotificationPolicy.notificationId(snapshot),
-        address = snapshot.title,
-        body = snapshot.text,
-        timestamp = snapshot.postedAt
-    )
+    private companion object {
+        const val EMAIL_A = "a@example.com"
+        const val EMAIL_B = "b@example.com"
+    }
 }

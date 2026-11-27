@@ -13,21 +13,7 @@ interface SmsDao {
     @Query("SELECT EXISTS(SELECT 1 FROM forwarded_sms WHERE address = :address AND body = :body AND ABS(timestamp - :timestamp) < 60000)")
     suspend fun isDuplicate(address: String, body: String, timestamp: Long): Boolean
 
-    @Query(
-        """
-        SELECT * FROM forwarded_sms
-        WHERE smsId = :id
-           OR (address = :address AND body = :body AND ABS(timestamp - :timestamp) < 60000)
-        """
-    )
-    suspend fun findPotentialDuplicates(
-        id: Long,
-        address: String,
-        body: String,
-        timestamp: Long
-    ): List<SmsRecord>
-
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insert(record: SmsRecord)
 
     @Query("SELECT * FROM forwarded_sms ORDER BY forwardTime DESC LIMIT 100")

@@ -9,37 +9,41 @@ import org.w3c.dom.Element
 class BackupRulesTest {
 
     @Test
-    fun `legacy backup rules exclude encrypted and legacy plaintext preferences`() {
-        val document = parse("backup_rules.xml")
-        val excludes = document.getElementsByTagName("exclude")
+    fun `legacy backup rules exclude secure prefs legacy prefs and work database`() {
+        val root = parse("backup_rules.xml").documentElement
 
-        assertTrue(hasSharedPrefsExclude(excludes, ConfigManager.SECURE_PREFS_NAME))
-        assertTrue(hasSharedPrefsExclude(excludes, ConfigManager.PREFS_NAME))
+        assertExcludes(root, "sharedpref", "${ConfigManager.SECURE_PREFS_NAME}.xml")
+        assertExcludes(root, "sharedpref", "${ConfigManager.PREFS_NAME}.xml")
+        assertExcludes(root, "database", WORK_MANAGER_DATABASE)
     }
 
     @Test
-    fun `cloud backup and device transfer exclude encrypted and legacy plaintext preferences`() {
+    fun `cloud backup and device transfer exclude secure prefs legacy prefs and work database`() {
         val document = parse("data_extraction_rules.xml")
         val cloudBackup = document.getElementsByTagName("cloud-backup").item(0) as Element
         val deviceTransfer = document.getElementsByTagName("device-transfer").item(0) as Element
 
-        assertTrue(hasSecureAndLegacyExcludes(cloudBackup))
-        assertTrue(hasSecureAndLegacyExcludes(deviceTransfer))
+        assertExcludes(cloudBackup, "sharedpref", "${ConfigManager.SECURE_PREFS_NAME}.xml")
+        assertExcludes(cloudBackup, "sharedpref", "${ConfigManager.PREFS_NAME}.xml")
+        assertExcludes(cloudBackup, "database", WORK_MANAGER_DATABASE)
+
+        assertExcludes(deviceTransfer, "sharedpref", "${ConfigManager.SECURE_PREFS_NAME}.xml")
+        assertExcludes(deviceTransfer, "sharedpref", "${ConfigManager.PREFS_NAME}.xml")
+        assertExcludes(deviceTransfer, "database", WORK_MANAGER_DATABASE)
     }
 
-    private fun hasSecureAndLegacyExcludes(parent: Element): Boolean {
-        val excludes = parent.getElementsByTagName("exclude")
-        return hasSharedPrefsExclude(excludes, ConfigManager.SECURE_PREFS_NAME) &&
-            hasSharedPrefsExclude(excludes, ConfigManager.PREFS_NAME)
+    private fun assertExcludes(parent: Element, domain: String, path: String) {
+        assertTrue(
+            "Expected <exclude domain=\"$domain\" path=\"$path\" />",
+            hasExclude(parent.getElementsByTagName("exclude"), domain, path)
+        )
     }
 
-    private fun hasSharedPrefsExclude(excludes: org.w3c.dom.NodeList, prefsName: String): Boolean {
-        val expectedPath = "$prefsName.xml"
-        return (0 until excludes.length).any { index ->
+    private fun hasExclude(excludes: org.w3c.dom.NodeList, domain: String, path: String): Boolean =
+        (0 until excludes.length).any { index ->
             val element = excludes.item(index) as Element
-            element.getAttribute("domain") == "sharedpref" && element.getAttribute("path") == expectedPath
+            element.getAttribute("domain") == domain && element.getAttribute("path") == path
         }
-    }
 
     private fun parse(fileName: String) =
         DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(findResource(fileName))
@@ -51,5 +55,9 @@ class BackupRulesTest {
         )
         return candidates.firstOrNull { it.exists() }
             ?: error("Cannot find backup resource $fileName from ${File("").absolutePath}")
+    }
+
+    private companion object {
+        const val WORK_MANAGER_DATABASE = "androidx.work.workdb"
     }
 }

@@ -67,66 +67,70 @@ class ConfigManager internal constructor(
         get() = prefs.getString("llm_model_id", "GLM-4.6V-Flash") ?: "GLM-4.6V-Flash"
         set(value) = prefs.edit().putString("llm_model_id", value).apply()
 
-    internal fun migrateLegacySecrets() {
+    internal fun migrateLegacySecrets() = synchronized(SECRET_LOCK) {
         migrateLegacySecret(SMTP_PASSWORD_KEY, LEGACY_SMTP_PASSWORD_KEY)
         migrateLegacySecret(LLM_API_KEY_KEY, LEGACY_LLM_API_KEY_KEY)
     }
 
-    private fun readSecret(secureKey: String, legacyKey: String): String {
+    private fun readSecret(secureKey: String, legacyKey: String): String = synchronized(SECRET_LOCK) {
         val encrypted = securePrefs.getString(secureKey, null)
         if (encrypted != null) {
-            return try {
+            return@synchronized try {
                 secretCodec.decrypt(encrypted, secureKey)
             } catch (e: Exception) {
                 Log.w(TAG, "无法解密敏感配置，尝试读取旧版配置: $legacyKey", e)
                 prefs.getString(legacyKey, "") ?: ""
             }
         }
-        return prefs.getString(legacyKey, "") ?: ""
+        prefs.getString(legacyKey, "") ?: ""
     }
 
     private fun writeSecret(secureKey: String, legacyKey: String, value: String) {
-        if (value.isEmpty()) {
-            removeSecret(secureKey, legacyKey)
-            return
-        }
+        synchronized(SECRET_LOCK) {
+            if (value.isEmpty()) {
+                removeSecret(secureKey, legacyKey)
+                return
+            }
 
-        val previousEncrypted = securePrefs.getString(secureKey, null)
-        try {
-            val encrypted = secretCodec.encrypt(value, secureKey)
-            if (!securePrefs.edit().putString(secureKey, encrypted).commit()) {
-                restoreSecureSecret(secureKey, previousEncrypted)
-                throw SecretStorageException("无法提交加密敏感配置: $secureKey")
+            val previousEncrypted = securePrefs.getString(secureKey, null)
+            try {
+                val encrypted = secretCodec.encrypt(value, secureKey)
+                if (!securePrefs.edit().putString(secureKey, encrypted).commit()) {
+                    restoreSecureSecret(secureKey, previousEncrypted)
+                    throw SecretStorageException("无法提交加密敏感配置: $secureKey")
+                }
+                if (!prefs.edit().remove(legacyKey).commit()) {
+                    restoreSecureSecret(secureKey, previousEncrypted)
+                    throw SecretStorageException("敏感配置已加密保存，但无法删除旧版明文: $legacyKey")
+                }
+            } catch (e: SecretStorageException) {
+                Log.e(TAG, e.message ?: "无法加密保存敏感配置: $secureKey", e)
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "无法加密保存敏感配置: $secureKey", e)
+                throw SecretStorageException("无法加密保存敏感配置: $secureKey", e)
             }
-            if (!prefs.edit().remove(legacyKey).commit()) {
-                restoreSecureSecret(secureKey, previousEncrypted)
-                throw SecretStorageException("敏感配置已加密保存，但无法删除旧版明文: $legacyKey")
-            }
-        } catch (e: SecretStorageException) {
-            Log.e(TAG, e.message ?: "无法加密保存敏感配置: $secureKey", e)
-            throw e
-        } catch (e: Exception) {
-            Log.e(TAG, "无法加密保存敏感配置: $secureKey", e)
-            throw SecretStorageException("无法加密保存敏感配置: $secureKey", e)
         }
     }
 
     private fun removeSecret(secureKey: String, legacyKey: String) {
-        val previousEncrypted = securePrefs.getString(secureKey, null)
-        try {
-            if (!securePrefs.edit().remove(secureKey).commit()) {
-                throw SecretStorageException("无法删除加密敏感配置: $secureKey")
+        synchronized(SECRET_LOCK) {
+            val previousEncrypted = securePrefs.getString(secureKey, null)
+            try {
+                if (!securePrefs.edit().remove(secureKey).commit()) {
+                    throw SecretStorageException("无法删除加密敏感配置: $secureKey")
+                }
+                if (!prefs.edit().remove(legacyKey).commit()) {
+                    restoreSecureSecret(secureKey, previousEncrypted)
+                    throw SecretStorageException("加密敏感配置已删除，但无法删除旧版明文: $legacyKey")
+                }
+            } catch (e: SecretStorageException) {
+                Log.e(TAG, e.message ?: "无法删除敏感配置: $secureKey", e)
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "无法删除敏感配置: $secureKey", e)
+                throw SecretStorageException("无法删除敏感配置: $secureKey", e)
             }
-            if (!prefs.edit().remove(legacyKey).commit()) {
-                restoreSecureSecret(secureKey, previousEncrypted)
-                throw SecretStorageException("加密敏感配置已删除，但无法删除旧版明文: $legacyKey")
-            }
-        } catch (e: SecretStorageException) {
-            Log.e(TAG, e.message ?: "无法删除敏感配置: $secureKey", e)
-            throw e
-        } catch (e: Exception) {
-            Log.e(TAG, "无法删除敏感配置: $secureKey", e)
-            throw SecretStorageException("无法删除敏感配置: $secureKey", e)
         }
     }
 
@@ -188,5 +192,13 @@ class ConfigManager internal constructor(
         const val LEGACY_LLM_API_KEY_KEY = "llm_api_key"
 
         private const val TAG = "ConfigManager"
+
+        /**
+         * 进程级凭证事务锁，所有实例的迁移、读取、写入和删除都必须在此锁内完成。
+         *
+         * 锁顺序固定为 ConfigManager SECRET_LOCK -> AndroidKeystoreSecretCodec 的监视器；
+         * codec 持有自身监视器时不会回调 ConfigManager，因此不存在反向获取顺序。
+         */
+        private val SECRET_LOCK = Any()
     }
 }

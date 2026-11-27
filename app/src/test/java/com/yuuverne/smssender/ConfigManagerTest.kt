@@ -1,12 +1,19 @@
 package com.yuuverne.smssender
 
 import android.content.SharedPreferences
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 
@@ -77,6 +84,136 @@ class ConfigManagerTest {
         assertNotEquals(API_SECRET, storedApiKey)
         assertEquals(SMTP_SECRET, codec.decrypt(storedSmtpPassword, ConfigManager.SMTP_PASSWORD_KEY))
         assertEquals(API_SECRET, codec.decrypt(storedApiKey, ConfigManager.LLM_API_KEY_KEY))
+    }
+
+    @Test
+    fun `concurrent migration cannot overwrite a newer secret write`() {
+        legacyPrefs.edit().putString(ConfigManager.LEGACY_SMTP_PASSWORD_KEY, SMTP_SECRET).commit()
+        val migrationEntered = CountDownLatch(1)
+        val releaseMigration = CountDownLatch(1)
+        val delegate = TestAesGcmCodec()
+        val blockingCodec = BlockingSecretCodec(
+            delegate = delegate,
+            blockedOperation = BlockingSecretCodec.Operation.ENCRYPT,
+            entered = migrationEntered,
+            release = releaseMigration
+        )
+        val migratingConfig = AtomicReference<ConfigManager>()
+        val migrationFailure = AtomicReference<Throwable>()
+        val migrator = thread("credential-migrator", migrationFailure) {
+            migratingConfig.set(ConfigManager(legacyPrefs, securePrefs, blockingCodec))
+        }
+        val writerStarted = CountDownLatch(1)
+        val writerFailure = AtomicReference<Throwable>()
+        val writer = thread("credential-writer", writerFailure) {
+            writerStarted.countDown()
+            ConfigManager(legacyPrefs, securePrefs, blockingCodec).smtpPassword = NEW_SECRET
+        }
+
+        try {
+            migrator.start()
+            assertTrue("Migration did not reach encryption", migrationEntered.await(5, TimeUnit.SECONDS))
+            writer.start()
+            assertTrue("Writer did not start", writerStarted.await(5, TimeUnit.SECONDS))
+            awaitBlocked(writer)
+            assertTrue("Writer should be waiting for the migration transaction", writer.isAlive)
+        } finally {
+            releaseMigration.countDown()
+            joinThread(migrator)
+            if (writer.state != Thread.State.NEW) joinThread(writer)
+        }
+
+        assertNull(migrationFailure.get())
+        assertNull(writerFailure.get())
+        val encrypted = securePrefs.getString(ConfigManager.SMTP_PASSWORD_KEY, null)
+            ?: error("Expected migrated ciphertext")
+        assertEquals(NEW_SECRET, delegate.decrypt(encrypted, ConfigManager.SMTP_PASSWORD_KEY))
+        assertEquals(NEW_SECRET, migratingConfig.get().smtpPassword)
+        assertFalse(legacyPrefs.contains(ConfigManager.LEGACY_SMTP_PASSWORD_KEY))
+    }
+
+    @Test
+    fun `secret reads hold the process lock against concurrent writes`() {
+        val delegate = TestAesGcmCodec()
+        val readEntered = CountDownLatch(1)
+        val releaseRead = CountDownLatch(1)
+        val blockingCodec = BlockingSecretCodec(
+            delegate = delegate,
+            blockedOperation = BlockingSecretCodec.Operation.DECRYPT,
+            entered = readEntered,
+            release = releaseRead
+        )
+        val readerConfig = ConfigManager(legacyPrefs, securePrefs, blockingCodec)
+        readerConfig.smtpPassword = SMTP_SECRET
+        val readFailure = AtomicReference<Throwable>()
+        val reader = thread("credential-reader", readFailure) {
+            readerConfig.smtpPassword
+        }
+        val writerFailure = AtomicReference<Throwable>()
+        val writer = thread("credential-writer", writerFailure) {
+            ConfigManager(legacyPrefs, securePrefs, blockingCodec).smtpPassword = NEW_SECRET
+        }
+
+        try {
+            reader.start()
+            assertTrue("Read did not reach decryption", readEntered.await(5, TimeUnit.SECONDS))
+            writer.start()
+            awaitBlocked(writer)
+            assertTrue("Writer should be waiting for the read transaction", writer.isAlive)
+        } finally {
+            releaseRead.countDown()
+            joinThread(reader)
+            if (writer.state != Thread.State.NEW) joinThread(writer)
+        }
+
+        assertNull(readFailure.get())
+        assertNull(writerFailure.get())
+        val encrypted = securePrefs.getString(ConfigManager.SMTP_PASSWORD_KEY, null)
+            ?: error("Expected updated ciphertext")
+        assertEquals(NEW_SECRET, delegate.decrypt(encrypted, ConfigManager.SMTP_PASSWORD_KEY))
+    }
+
+    @Test
+    fun `secret removal cannot erase a concurrent newer write`() {
+        val codec = TestAesGcmCodec()
+        val config = ConfigManager(legacyPrefs, securePrefs, codec)
+        config.smtpPassword = SMTP_SECRET
+        val removalEntered = CountDownLatch(1)
+        val releaseRemoval = CountDownLatch(1)
+        securePrefs.beforeRemove = { key ->
+            if (key == ConfigManager.SMTP_PASSWORD_KEY) {
+                removalEntered.countDown()
+                check(releaseRemoval.await(5, TimeUnit.SECONDS)) {
+                    "Timed out waiting to finish secure preference removal"
+                }
+            }
+        }
+        val removalFailure = AtomicReference<Throwable>()
+        val remover = thread("credential-remover", removalFailure) {
+            config.smtpPassword = ""
+        }
+        val writerFailure = AtomicReference<Throwable>()
+        val writer = thread("credential-writer", writerFailure) {
+            ConfigManager(legacyPrefs, securePrefs, codec).smtpPassword = NEW_SECRET
+        }
+
+        try {
+            remover.start()
+            assertTrue("Removal did not reach secure preference deletion", removalEntered.await(5, TimeUnit.SECONDS))
+            writer.start()
+            awaitBlocked(writer)
+            assertTrue("Writer should be waiting for the removal transaction", writer.isAlive)
+        } finally {
+            releaseRemoval.countDown()
+            joinThread(remover)
+            if (writer.state != Thread.State.NEW) joinThread(writer)
+        }
+
+        assertNull(removalFailure.get())
+        assertNull(writerFailure.get())
+        val encrypted = securePrefs.getString(ConfigManager.SMTP_PASSWORD_KEY, null)
+            ?: error("Expected newer ciphertext to survive removal")
+        assertEquals(NEW_SECRET, codec.decrypt(encrypted, ConfigManager.SMTP_PASSWORD_KEY))
     }
 
     @Test
@@ -264,6 +401,66 @@ class ConfigManagerTest {
         assertEquals("", config.smtpPassword)
     }
 
+    private fun thread(
+        name: String,
+        failure: AtomicReference<Throwable>,
+        block: () -> Unit
+    ): Thread = Thread({
+        try {
+            block()
+        } catch (t: Throwable) {
+            failure.set(t)
+        }
+    }, name)
+
+    private fun awaitBlocked(thread: Thread) {
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+        while (thread.state != Thread.State.BLOCKED) {
+            if (thread.state == Thread.State.TERMINATED) {
+                error("Thread ${thread.name} terminated before blocking on the credential lock")
+            }
+            check(System.nanoTime() < deadline) {
+                "Thread ${thread.name} did not block on the credential lock"
+            }
+            Thread.yield()
+        }
+    }
+
+    private fun joinThread(thread: Thread) {
+        thread.join(5000)
+        assertFalse("Thread ${thread.name} did not finish", thread.isAlive)
+    }
+
+    private class BlockingSecretCodec(
+        private val delegate: SecretCodec,
+        private val blockedOperation: Operation,
+        private val entered: CountDownLatch,
+        private val release: CountDownLatch
+    ) : SecretCodec {
+        enum class Operation { ENCRYPT, DECRYPT }
+
+        private val shouldBlock = AtomicBoolean(true)
+
+        override fun encrypt(plainText: String, associatedData: String): String {
+            blockIfNeeded(Operation.ENCRYPT)
+            return delegate.encrypt(plainText, associatedData)
+        }
+
+        override fun decrypt(cipherText: String, associatedData: String): String {
+            blockIfNeeded(Operation.DECRYPT)
+            return delegate.decrypt(cipherText, associatedData)
+        }
+
+        private fun blockIfNeeded(operation: Operation) {
+            if (operation == blockedOperation && shouldBlock.compareAndSet(true, false)) {
+                entered.countDown()
+                check(release.await(5, TimeUnit.SECONDS)) {
+                    "Timed out waiting to release blocked $operation operation"
+                }
+            }
+        }
+    }
+
     private class TestAesGcmCodec : SecretCodec {
         private val key: SecretKey = KeyGenerator.getInstance("AES").apply { init(256) }.generateKey()
         val encryptAssociatedData = mutableListOf<String>()
@@ -280,8 +477,11 @@ class ConfigManagerTest {
     }
 
     private class FakeSharedPreferences : SharedPreferences {
-        private val values = mutableMapOf<String, Any>()
+        private val values = ConcurrentHashMap<String, Any>()
+        @Volatile
         var failNextCommit = false
+        @Volatile
+        var beforeRemove: ((String?) -> Unit)? = null
 
         override fun getAll(): MutableMap<String, *> = values.toMutableMap()
 
@@ -337,7 +537,10 @@ class ConfigManagerTest {
 
             override fun putBoolean(key: String?, value: Boolean): SharedPreferences.Editor = put(key, value)
 
-            override fun remove(key: String?): SharedPreferences.Editor = put(key, null)
+            override fun remove(key: String?): SharedPreferences.Editor {
+                beforeRemove?.invoke(key)
+                return put(key, null)
+            }
 
             override fun clear(): SharedPreferences.Editor = apply { clearRequested = true }
 
@@ -370,5 +573,6 @@ class ConfigManagerTest {
     private companion object {
         const val SMTP_SECRET = "smtp-secret-123456"
         const val API_SECRET = "llm-api-key-abcdef"
+        const val NEW_SECRET = "new-smtp-secret-789012"
     }
 }

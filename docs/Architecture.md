@@ -58,7 +58,7 @@ Key architectural decisions that shaped the project.
 1. **通知监听优先于广播接收**：Android 14+ 限制后台广播接收，`SmsNotificationListener` 通过 NotificationListenerService 捕获通知栏短信，绕过系统对验证码短信的读取限制。
 2. **WorkManager 负责可靠投递**：通知主路径不直接同步发送邮件，而是为每个收件人持久化入队；网络约束和退避重试避免临时故障丢邮件。
 3. **成功后去重而非入队时去重**：pending 状态由 unique work 的 KEEP 策略去重，成功状态由 Room 记录去重，永久失败不落记录，因此同 key 回调可以重试。
-4. **启发式提取取代 LLM**：原方案依赖 LLM API 提取验证码，存在网络延迟、成本、隐私问题。现用 40+ 条编译时正则，0-2ms 完成提取，29/29 测试用例通过。
-5. **取件码独立于验证码**：`PickupCodeExtractor` 与 `ExtractionUtils` 完全独立，避免混淆。取件码格式（带连字符、字母数字组合）与 OTP 格式（纯数字）有明显区别。
+4. **启发式提取取代 LLM**：原方案依赖 LLM API 提取验证码，存在网络延迟、成本、隐私问题。现用 40+ 条编译时正则，0-2ms 完成提取，核心纯 Kotlin 单元测试全部通过。
+5. **取件码独立于验证码**：`PickupCodeExtractor` 与 `ExtractionUtils` 完全独立，避免混淆。取件码格式（支持连字符、字母数字组合）与 OTP 格式（数字或字母数字）有明显区别。
 6. **保留通知过滤与生命周期保护**：总开关、正文选择、包名过滤、群摘要/持续通知过滤、`SupervisorJob` 和 `onDestroy()` 取消逻辑均保留；WorkManager 数据库和仅含哈希元数据的 `sms_sender_db` 均从 Auto Backup、cloud backup 和 device-transfer 中排除。
 7. **SmsReceiver 已移除**：空广播接收器不再注册，所有短信捕获由 `SmsNotificationListener` 完成。

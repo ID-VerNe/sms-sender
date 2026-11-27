@@ -27,6 +27,26 @@ class PickupCodeExtractorTest {
     }
 
     @Test
+    fun extractsAlphanumericPickupCode() {
+        val body = "【菜鸟驿站】您的取件码为 A1B2C3，请及时取件"
+
+        val result = PickupCodeExtractor.extractPickupCode(body)
+
+        assertEquals("A1B2C3", result.code)
+        assertEquals("菜鸟驿站", result.company)
+    }
+
+    @Test
+    fun extractsHyphenatedPickupCode() {
+        val body = "【丰巢】您的取件码为 AB-1234，请及时取件"
+
+        val result = PickupCodeExtractor.extractPickupCode(body)
+
+        assertEquals("AB-1234", result.code)
+        assertEquals("丰巢", result.company)
+    }
+
+    @Test
     fun excludesVerificationCodeMessages() {
         val body = "【淘宝】您的验证码为 123456，请勿泄露"
 

@@ -47,7 +47,7 @@ class ConfigManager internal constructor(
         set(value) = prefs.edit().putBoolean("service_enabled", value).apply()
 
     var useSsl: Boolean
-        get() = prefs.getBoolean("use_ssl", true)
+        get() = prefs.getBoolean("use_ssl", defaultUseSslForPort(smtpPort))
         set(value) = prefs.edit().putBoolean("use_ssl", value).apply()
 
     // LLM 相关配置

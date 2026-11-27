@@ -8,10 +8,12 @@
         <!-- 加密秘密不备份；旧配置在迁移完成前仍可能含明文凭证，因此整文件排除。 -->
         <exclude domain="sharedpref" path="sms_sender_secure_prefs.xml" />
         <exclude domain="sharedpref" path="sms_sender_prefs.xml" />
+        <exclude domain="database" path="androidx.work.workdb" />
     </cloud-backup>
     <device-transfer>
         <!-- 加密秘密不迁移；旧配置在迁移完成前仍可能含明文凭证，因此整文件排除。 -->
         <exclude domain="sharedpref" path="sms_sender_secure_prefs.xml" />
         <exclude domain="sharedpref" path="sms_sender_prefs.xml" />
+        <exclude domain="database" path="androidx.work.workdb" />
     </device-transfer>
 </data-extraction-rules>

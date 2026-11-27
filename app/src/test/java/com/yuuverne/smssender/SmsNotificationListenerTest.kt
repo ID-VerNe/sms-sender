@@ -1,7 +1,9 @@
 package com.yuuverne.smssender
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SmsNotificationListenerTest {
@@ -59,5 +61,15 @@ class SmsNotificationListenerTest {
         )
 
         assertNull(result)
+    }
+
+    @Test
+    fun doesNotForwardWhenServiceIsDisabled() {
+        assertFalse(shouldForwardNotification(isServiceEnabled = false))
+    }
+
+    @Test
+    fun allowsForwardingWhenServiceIsEnabled() {
+        assertTrue(shouldForwardNotification(isServiceEnabled = true))
     }
 }

@@ -4,15 +4,32 @@ import android.app.Notification
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import android.util.Log
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+
+internal fun shouldForwardNotification(isServiceEnabled: Boolean): Boolean = isServiceEnabled
 
 class SmsNotificationListener : NotificationListenerService() {
 
-    private val scope = CoroutineScope(Dispatchers.IO)
+    private val scope = createNotificationScope(
+        dispatcher = Dispatchers.IO,
+        exceptionHandler = CoroutineExceptionHandler { _, throwable ->
+            Log.e("SmsSender_Trace", "短信通知处理发生未捕获异常", throwable)
+        }
+    )
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
+        val config = ConfigManager(applicationContext)
+        if (!shouldForwardNotification(config.isServiceEnabled)) {
+            Log.i("SmsSender_Trace", "转发总开关已关闭，忽略通知")
+            return
+        }
+
         val packageName = sbn.packageName
         
         // 过滤短信应用包名
@@ -32,7 +49,6 @@ class SmsNotificationListener : NotificationListenerService() {
 
         // 转发邮件逻辑
         scope.launch {
-            val config = ConfigManager(applicationContext)
             val db = com.yuuverne.smssender.database.AppDatabase.getDatabase(applicationContext)
             val enabledRules = db.ruleDao().getEnabledRules()
             
@@ -75,6 +91,11 @@ class SmsNotificationListener : NotificationListenerService() {
 
     override fun onNotificationRemoved(sbn: StatusBarNotification) {
     }
+
+    override fun onDestroy() {
+        scope.cancel()
+        super.onDestroy()
+    }
 }
 
 internal fun selectNotificationText(
@@ -91,3 +112,8 @@ internal fun selectNotificationText(
 
     return text?.toString()?.takeIf { it.isNotBlank() }
 }
+
+internal fun createNotificationScope(
+    dispatcher: CoroutineDispatcher,
+    exceptionHandler: CoroutineExceptionHandler
+): CoroutineScope = CoroutineScope(SupervisorJob() + dispatcher + exceptionHandler)
